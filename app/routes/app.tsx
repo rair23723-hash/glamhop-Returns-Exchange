@@ -2,12 +2,10 @@ import type { HeadersFunction, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { Link, Outlet, useLoaderData } from "@remix-run/react";
 import { AppProvider as PolarisAppProvider } from "@shopify/polaris";
-import polarisStyles from "@shopify/polaris/build/styles.css?url";
+import "@shopify/polaris/build/styles.css";
 import { Boundary } from "@shopify/shopify-app-remix/react";
 import shopify from "../shopify.server";
 import polarisTranslations from "@shopify/polaris/locales/en.json";
-
-export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await shopify.authenticate.admin(request);
