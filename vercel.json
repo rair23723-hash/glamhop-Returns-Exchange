@@ -1,6 +1,6 @@
 {
   "version": 2,
   "framework": "remix",
-  "buildCommand": "npx prisma generate && vite build",
+  "buildCommand": "npx prisma generate && npm run build",
   "cleanUrls": true
 }
