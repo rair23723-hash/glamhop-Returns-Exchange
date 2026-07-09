@@ -1,9 +1,9 @@
 import type { HeadersFunction, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { Link, Outlet, useLoaderData } from "@remix-run/react";
+import { Link, Outlet, useLoaderData, useRouteError } from "@remix-run/react";
 import { AppProvider as PolarisAppProvider } from "@shopify/polaris";
 import "@shopify/polaris/build/esm/styles.css";
-import { Boundary } from "@shopify/shopify-app-remix/react";
+import { boundary } from "@shopify/shopify-app-remix/server";
 import shopify from "../shopify.server";
 import polarisTranslations from "@shopify/polaris/locales/en.json";
 
@@ -40,5 +40,5 @@ export const headers: HeadersFunction = ({ loaderHeaders }) => {
 };
 
 export function ErrorBoundary() {
-  return <Boundary />;
+  return boundary.error(useRouteError());
 }
