@@ -1,0 +1,32 @@
+# Learn more about configuring shopify.app.toml at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = ""
+name = "Glamhop Returns & Exchange"
+handle = "glamhop-returns-exchange"
+application_url = "https://glamhop-returns-exchange.vercel.app"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+dev_store_url = ""
+
+[access_scopes]
+scopes = "write_orders,read_orders,read_customers"
+
+[auth]
+redirect_urls = [
+  "https://glamhop-returns-exchange.vercel.app/auth/callback",
+  "https://glamhop-returns-exchange.vercel.app/auth/shopify/callback"
+]
+
+[app_proxy]
+url = "https://glamhop-returns-exchange.vercel.app/app/proxy"
+subpath = "glamhop-returns"
+prefix = "apps"
+
+[webhooks]
+api_version = "2024-04"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/webhooks"

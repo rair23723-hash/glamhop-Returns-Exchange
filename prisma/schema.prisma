@@ -1,0 +1,106 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+}
+
+model ReturnRequest {
+  id              String          @id @default(uuid())
+  requestId       String          @unique // e.g., GHR-000001
+  shop            String
+  customerId      String
+  customerName    String?
+  customerEmail   String?
+  orderId         String
+  orderNumber     String
+  status          String          @default("PENDING") // PENDING, APPROVED, REJECTED, COMPLETED
+  type            String          // RETURN, EXCHANGE, MIXED
+  rejectionReason String?
+  customerNotes   String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  items           ReturnItem[]
+  notes           AdminNote[]
+  timeline        TimelineEvent[]
+}
+
+model ReturnItem {
+  id                   String          @id @default(uuid())
+  returnRequestId      String
+  returnRequest        ReturnRequest   @relation(fields: [returnRequestId], references: [id], onDelete: Cascade)
+  lineItemId           String
+  quantity             Int
+  reason               String          // Dropdown reason
+  otherReasonText      String?         // Text area if "Other" reason chosen
+  type                 String          // RETURN, EXCHANGE
+  exchangeVariantId    String?         // GID of variant if type is EXCHANGE
+  exchangeVariantTitle String?         // e.g. "M / Black" if type is EXCHANGE
+  requestedSize        String?         // New size if size exchange
+  productTitle         String
+  variantTitle         String?
+  imageUrl             String?
+  images               UploadedImage[]
+}
+
+model UploadedImage {
+  id           String     @id @default(uuid())
+  returnItemId String
+  returnItem   ReturnItem @relation(fields: [returnItemId], references: [id], onDelete: Cascade)
+  url          String     // Stored base64 data URL
+  createdAt    DateTime   @default(now())
+}
+
+model AdminNote {
+  id              String        @id @default(uuid())
+  returnRequestId String
+  returnRequest   ReturnRequest @relation(fields: [returnRequestId], references: [id], onDelete: Cascade)
+  note            String
+  author          String        @default("Admin")
+  createdAt       DateTime      @default(now())
+}
+
+model TimelineEvent {
+  id              String        @id @default(uuid())
+  returnRequestId String
+  returnRequest   ReturnRequest @relation(fields: [returnRequestId], references: [id], onDelete: Cascade)
+  status          String        // Timeline status identifier, e.g. SUBMITTED, PENDING_REVIEW, APPROVED, PICKED_UP, etc.
+  title           String        // User-friendly stage name, e.g. "Pickup Scheduled"
+  description     String?       // Optional comments or system annotations
+  createdAt       DateTime      @default(now())
+}
+
+model AppSettings {
+  shop                  String   @id
+  returnWindowDays      Int      @default(30)
+  exchangeWindowDays    Int      @default(30)
+  returnFee             Float    @default(0.0)
+  exchangeFee           Float    @default(0.0)
+  eligibleCategories    String   @default("[]") // JSON string array of categories
+  nonReturnableProducts String   @default("[]") // JSON string array of GIDs
+  saleItemsEligible     Boolean  @default(false)
+  imageRequired         Boolean  @default(true)
+  maxImages             Int      @default(5)
+  allowedReasons        String   @default("[]") // JSON string array of reasons
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
