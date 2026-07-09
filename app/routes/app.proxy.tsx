@@ -1,41 +1,39 @@
-import type { LoaderFunctionArgs, ActionFunctionArgs, LinksFunction } from "@remix-run/node";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
-import { useState } from "react";
 import shopify from "../shopify.server";
 import db from "../db.server";
-import portalStyles from "../styles/portal.css?url";
-import CustomerPortalLayout from "../components/CustomerPortalLayout";
-import GlamHopOrderCard, { type OrderItem } from "../components/GlamHopOrderCard";
-import ReturnExchangeForm from "../components/ReturnExchangeForm";
-
-export const links: LinksFunction = () => [
-  { rel: "stylesheet", href: portalStyles },
-];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const loggedInCustomerId = url.searchParams.get("logged_in_customer_id");
   const shopParam = url.searchParams.get("shop");
 
+  // 1. Force native storefront login redirect if not authenticated
   if (!loggedInCustomerId) {
-    const shopDomain = shopParam || "glamhop.myshopify.com";
+    const redirectUrl = "/account/login?checkout_url=/apps/returns";
     return new Response(null, {
       status: 302,
       headers: {
-        Location: `https://${shopDomain}/account/login`,
+        Location: redirectUrl,
       },
     });
   }
 
+  // 2. Validate App Proxy signed request
   const { admin, session } = await shopify.authenticate.public.appProxy(request);
-  const shop = session.shop;
-  const shopName = shop.split(".")[0].toUpperCase();
+  if (!session) {
+    return new Response("Unauthorized Proxy Signature", { status: 401 });
+  }
 
+  if (!admin) {
+    return new Response("Shopify API Client Uninitialized", { status: 500 });
+  }
+
+  const shop = session.shop;
   const customerId = `gid://shopify/Customer/${loggedInCustomerId}`;
 
   try {
-    // 1. Load app settings for return engine
+    // 3. Load Return Policy Settings
     let settings = await db.appSettings.findUnique({
       where: { shop },
     });
@@ -53,12 +51,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           saleItemsEligible: false,
           imageRequired: true,
           maxImages: 5,
-          allowedReasons: "[]",
+          allowedReasons: JSON.stringify([
+            "Wrong Size",
+            "Wrong Product",
+            "Damaged Product",
+            "Defective Product",
+            "Quality Issue",
+            "Product Not As Expected",
+            "Changed Mind",
+            "Other",
+          ]),
         },
       });
     }
 
-    // 2. Fetch customer orders
+    const eligibleCats = JSON.parse(settings.eligibleCategories);
+    const nonReturnableProds = JSON.parse(settings.nonReturnableProducts);
+    const allowedReasonsList = JSON.parse(settings.allowedReasons);
+
+    // 4. Query Customer Profile & Orders
     const response = await admin.graphql(
       `#graphql
       query getCustomerOrders($customerId: ID!) {
@@ -80,11 +91,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                       id
                       title
                       quantity
-                      originalTotalPriceSet {
-                        shopMoney {
-                          amount
-                        }
-                      }
                       variant {
                         id
                         title
@@ -92,11 +98,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                         compareAtPrice
                         image {
                           url
-                          altText
-                        }
-                        selectedOptions {
-                          name
-                          value
                         }
                         product {
                           id
@@ -126,26 +127,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
       }`,
       {
-        variables: {
-          customerId,
-        },
+        variables: { customerId },
       }
     );
 
     const responseData = await response.json();
     const customer = responseData.data?.customer;
 
-    // 3. Fetch requests history (including timelines)
-    const requests = await db.returnRequest.findMany({
-      where: {
-        shop,
-        customerId,
-      },
+    // 5. Query Existing Requests and timelines
+    const dbRequests = await db.returnRequest.findMany({
+      where: { shop, customerId },
       include: {
         items: {
-          include: {
-            images: true,
-          },
+          include: { images: true },
         },
         timeline: {
           orderBy: { createdAt: "asc" },
@@ -154,29 +148,802 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       orderBy: { createdAt: "desc" },
     });
 
-    return json({
-      customer,
-      requests,
-      settings,
-      shopName,
-      error: null,
-      portalStylesUrl: portalStyles,
+    // 6. Pre-render Orders List HTML on Server Side
+    let ordersHtml = "";
+    const orders = customer?.orders?.edges || [];
+
+    if (orders.length === 0) {
+      ordersHtml = `
+        <div class="glamhop-empty-state">
+          <p>We couldn't find any recent purchases associated with your account.</p>
+        </div>
+      `;
+    } else {
+      orders.forEach(({ node: order }: any) => {
+        const orderDate = new Date(order.createdAt);
+        const deliveryDate = new Date(orderDate);
+        deliveryDate.setDate(deliveryDate.getDate() + 3);
+        const formattedDate = orderDate.toLocaleDateString("en-US", {
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        });
+
+        const isDelivered = order.displayFulfillmentStatus === "FULFILLED";
+        const currentDate = new Date();
+        const diffTime = Math.abs(currentDate.getTime() - deliveryDate.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        const isWithinReturnWindow = diffDays <= settings!.returnWindowDays;
+        const isWithinExchangeWindow = diffDays <= settings!.exchangeWindowDays;
+
+        let itemsHtml = "";
+
+        order.lineItems.edges.forEach(({ node: item }: any) => {
+          // Calculate eligibility
+          const existingItemRequests = dbRequests.filter(
+            (r: any) => r.orderId === order.id && r.items.some((i: any) => i.lineItemId === item.id)
+          );
+          const hasActiveReturn = existingItemRequests.some(
+            (r: any) => r.status !== "REJECTED" && r.items.some((i: any) => i.lineItemId === item.id && i.type === "RETURN")
+          );
+          const hasActiveExchange = existingItemRequests.some(
+            (r: any) => r.status !== "REJECTED" && r.items.some((i: any) => i.lineItemId === item.id && i.type === "EXCHANGE")
+          );
+
+          const productType = item.variant?.product?.productType || "";
+          const isCategoryEligible = eligibleCats.length === 0 || eligibleCats.includes(productType);
+          const productId = item.variant?.product?.id || "";
+          const isProductReturnable = !nonReturnableProds.includes(productId);
+
+          const isSaleItem = item.variant?.compareAtPrice && parseFloat(item.variant.compareAtPrice) > parseFloat(item.variant.price);
+          const isSaleEligible = !isSaleItem || settings!.saleItemsEligible;
+
+          const siblingVariants = item.variant?.product?.variants?.edges || [];
+          const totalInventory = siblingVariants.reduce((sum: number, edge: any) => sum + (edge.node.inventoryQuantity || 0), 0);
+          const hasInventory = totalInventory > 0;
+
+          const returnEligible = isDelivered && isWithinReturnWindow && !hasActiveReturn && isCategoryEligible && isProductReturnable && isSaleEligible;
+          const exchangeEligible = isDelivered && isWithinExchangeWindow && !hasActiveExchange && isCategoryEligible && isProductReturnable && isSaleEligible && hasInventory;
+
+          const returnIneligibleReason = !isDelivered
+            ? "Order is not yet delivered"
+            : !isWithinReturnWindow
+              ? `Exceeded return window (${settings!.returnWindowDays} days)`
+              : hasActiveReturn
+                ? "Return already initiated"
+                : !isCategoryEligible
+                  ? "Category ineligible"
+                  : !isProductReturnable
+                    ? "Item marked non-returnable"
+                    : !isSaleEligible
+                      ? "Sale items ineligible"
+                      : "";
+
+          const exchangeIneligibleReason = !isDelivered
+            ? "Order is not yet delivered"
+            : !isWithinExchangeWindow
+              ? `Exceeded exchange window (${settings!.exchangeWindowDays} days)`
+              : hasActiveExchange
+                ? "Exchange already initiated"
+                : !isCategoryEligible
+                  ? "Category ineligible"
+                  : !isProductReturnable
+                    ? "Item marked non-returnable"
+                    : !isSaleEligible
+                      ? "Sale items ineligible"
+                      : !hasInventory
+                        ? "Out of stock"
+                        : "";
+
+          const imageUrl = item.variant?.image?.url || "https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png";
+
+          // Extract size variants for swapping
+          const sizeOption = item.variant?.product?.options?.find((o: any) => o.name.toLowerCase() === "size");
+          const sizes = sizeOption ? sizeOption.values : ["S", "M", "L", "XL"];
+
+          itemsHtml += `
+            <div class="glamhop-item-row" data-item-id="${item.id}">
+              <img class="glamhop-item-img" src="${imageUrl}" alt="" />
+              <div class="glamhop-item-details">
+                <div class="glamhop-item-title">${item.title}</div>
+                <div class="glamhop-item-meta">
+                  <span>Variant: ${item.variant?.title || "Default"}</span> • 
+                  <span>Quantity: ${item.quantity}</span>
+                </div>
+                
+                <div class="glamhop-item-actions">
+                  ${returnEligible ? `
+                    <button class="glamhop-btn-action glamhop-btn-primary" onclick="openPortalForm('${order.id}', '${order.name}', '${item.id}', '${item.title.replace(/'/g, "\\'")}', '${item.variant?.title.replace(/'/g, "\\'")}', '${imageUrl}', ${item.quantity}, 'RETURN', '${sizes.join(",")}')">Return</button>
+                  ` : `
+                    <span class="glamhop-ineligible-tag">Return Blocked: ${returnIneligibleReason}</span>
+                  `}
+
+                  ${exchangeEligible ? `
+                    <button class="glamhop-btn-action glamhop-btn-secondary" onclick="openPortalForm('${order.id}', '${order.name}', '${item.id}', '${item.title.replace(/'/g, "\\'")}', '${item.variant?.title.replace(/'/g, "\\'")}', '${imageUrl}', ${item.quantity}, 'EXCHANGE', '${sizes.join(",")}')">Exchange</button>
+                  ` : `
+                    <span class="glamhop-ineligible-tag">Exchange Blocked: ${exchangeIneligibleReason}</span>
+                  `}
+                </div>
+              </div>
+            </div>
+          `;
+        });
+
+        ordersHtml += `
+          <div class="glamhop-order-card">
+            <div class="glamhop-order-header">
+              <div>
+                <h3 class="glamhop-order-id">Order ${order.name}</h3>
+                <span class="glamhop-order-date">${formattedDate}</span>
+              </div>
+              <div class="glamhop-badges">
+                <span class="glamhop-badge status-${order.displayFinancialStatus.toLowerCase()}">${order.displayFinancialStatus}</span>
+                <span class="glamhop-badge status-${order.displayFulfillmentStatus.toLowerCase()}">${order.displayFulfillmentStatus}</span>
+              </div>
+            </div>
+            <div class="glamhop-order-body">
+              ${itemsHtml}
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    // 7. Pre-render Requests History HTML
+    let requestsHtml = "";
+    if (dbRequests.length === 0) {
+      requestsHtml = `
+        <div class="glamhop-empty-state">
+          <p>You have not submitted any returns or exchanges.</p>
+        </div>
+      `;
+    } else {
+      dbRequests.forEach((req: any) => {
+        let itemsSummary = "";
+        req.items.forEach((item: any) => {
+          itemsSummary += `
+            <div class="glamhop-hist-row">
+              <img src="${item.imageUrl || ""}" style="width: 44px; height: 60px; object-fit: cover; border-radius: 4px;" />
+              <div>
+                <div style="font-weight:600;">${item.productTitle}</div>
+                <div style="font-size:12px; color:#707070;">
+                  Variant: ${item.variantTitle || "Default"} • Qty: ${item.quantity}
+                </div>
+                <div style="font-size:12px; margin-top:2px;">
+                  <strong>Reason:</strong> ${item.reason} ${item.otherReasonText ? `(${item.otherReasonText})` : ""}
+                  ${item.requestedSize ? ` • <strong>Exchange Size:</strong> ${item.requestedSize}` : ""}
+                </div>
+              </div>
+            </div>
+          `;
+        });
+
+        let timelineSteps = "";
+        req.timeline.forEach((event: any, idx: number) => {
+          const dt = new Date(event.createdAt);
+          timelineSteps += `
+            <div class="glamhop-time-step">
+              <div class="glamhop-time-bullet" style="background-color: ${idx === req.timeline.length - 1 ? "#000000" : "#d0d0d0"}"></div>
+              <div class="glamhop-time-content">
+                <div class="glamhop-time-title">${event.title}</div>
+                <div class="glamhop-time-meta">${dt.toLocaleDateString()} • ${dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+                ${event.description ? `<div class="glamhop-time-desc">${event.description}</div>` : ""}
+              </div>
+            </div>
+          `;
+        });
+
+        requestsHtml += `
+          <div class="glamhop-request-card">
+            <div class="glamhop-req-header">
+              <div>
+                <h4>Request ${req.requestId}</h4>
+                <span>For Order ${req.orderNumber} • ${new Date(req.createdAt).toLocaleDateString()}</span>
+              </div>
+              <div>
+                <span class="glamhop-badge status-${req.status.toLowerCase()}">${req.status}</span>
+                <span class="glamhop-badge">${req.type}</span>
+              </div>
+            </div>
+            
+            <div class="glamhop-req-items">
+              ${itemsSummary}
+            </div>
+
+            ${req.rejectionReason ? `
+              <div class="glamhop-rejection-box">
+                <strong>Rejection Reason:</strong> ${req.rejectionReason}
+              </div>
+            ` : ""}
+
+            <button class="glamhop-btn-toggle" onclick="toggleTimeline('${req.id}')">View Tracking Timeline</button>
+            <div id="timeline-${req.id}" class="glamhop-timeline-wrapper" style="display:none;">
+              <h5 style="margin: 0 0 16px 0; font-size:12px; text-transform:uppercase; letter-spacing:0.05em;">Status Progression Tracking</h5>
+              <div class="glamhop-timeline-steps">
+                ${timelineSteps}
+              </div>
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    // 8. Generate full liquid template to inject inside storefront layout
+    const reasonsOptions = allowedReasonsList.map((r: string) => `<option value="${r}">${r}</option>`).join("");
+
+    const liquidTemplate = `
+      <style>
+        .glamhop-portal-wrapper {
+          max-width: 800px;
+          margin: 40px auto;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          color: #000000;
+          padding: 0 20px;
+        }
+        .glamhop-portal-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 30px;
+          border-bottom: 1px solid #eeeeee;
+          padding-bottom: 20px;
+        }
+        .glamhop-greeting {
+          font-size: 18px;
+          font-weight: 600;
+          letter-spacing: -0.02em;
+        }
+        .glamhop-tabs-bar {
+          display: flex;
+          border-bottom: 1px solid #eeeeee;
+          margin-bottom: 30px;
+          gap: 16px;
+        }
+        .glamhop-tab-btn {
+          background: none;
+          border: none;
+          padding: 12px 16px;
+          font-size: 13px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: #999999;
+          cursor: pointer;
+          border-bottom: 2px solid transparent;
+          transition: all 0.2s;
+        }
+        .glamhop-tab-btn.active {
+          color: #000000;
+          border-bottom-color: #000000;
+        }
+        .glamhop-order-card, .glamhop-request-card {
+          border: 1px solid #eeeeee;
+          border-radius: 12px;
+          padding: 24px;
+          background-color: #ffffff;
+          margin-bottom: 24px;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.01);
+        }
+        .glamhop-order-header, .glamhop-req-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          border-bottom: 1px solid #fafafa;
+          padding-bottom: 16px;
+          margin-bottom: 16px;
+        }
+        .glamhop-order-id, .glamhop-req-header h4 {
+          font-size: 16px;
+          font-weight: 600;
+          margin: 0 0 4px 0;
+        }
+        .glamhop-order-date, .glamhop-req-header span {
+          font-size: 12px;
+          color: #707070;
+        }
+        .glamhop-badges {
+          display: flex;
+          gap: 8px;
+        }
+        .glamhop-badge {
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          padding: 4px 8px;
+          border-radius: 4px;
+          background-color: #f4f4f4;
+          color: #555555;
+        }
+        .glamhop-badge.status-fulfilled, .glamhop-badge.status-approved, .glamhop-badge.status-completed {
+          background-color: #e8f5e9;
+          color: #2e7d32;
+        }
+        .glamhop-badge.status-unfulfilled, .glamhop-badge.status-pending {
+          background-color: #fff3e0;
+          color: #e65100;
+        }
+        .glamhop-badge.status-rejected {
+          background-color: #ffe5e5;
+          color: #c62828;
+        }
+        .glamhop-item-row {
+          display: flex;
+          gap: 16px;
+          padding: 16px 0;
+          border-bottom: 1px solid #fafafa;
+        }
+        .glamhop-item-row:last-child {
+          border-bottom: none;
+        }
+        .glamhop-item-img {
+          width: 70px;
+          height: 95px;
+          object-fit: cover;
+          border-radius: 6px;
+          border: 1px solid #f0f0f0;
+        }
+        .glamhop-item-details {
+          flex-grow: 1;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+        }
+        .glamhop-item-title {
+          font-size: 14px;
+          font-weight: 600;
+        }
+        .glamhop-item-meta {
+          font-size: 12px;
+          color: #707070;
+          margin-top: 4px;
+        }
+        .glamhop-item-actions {
+          display: flex;
+          gap: 12px;
+          margin-top: 12px;
+        }
+        .glamhop-btn-action {
+          padding: 8px 16px;
+          font-size: 12px;
+          font-weight: 600;
+          border-radius: 6px;
+          cursor: pointer;
+          border: 1px solid #000000;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          transition: all 0.2s;
+        }
+        .glamhop-btn-primary {
+          background-color: #000000;
+          color: #ffffff;
+        }
+        .glamhop-btn-secondary {
+          background-color: #ffffff;
+          color: #000000;
+        }
+        .glamhop-ineligible-tag {
+          font-size: 11px;
+          color: #999999;
+          background-color: #fafafa;
+          padding: 6px 12px;
+          border-radius: 4px;
+          border: 1px dashed #dddddd;
+        }
+        .glamhop-empty-state {
+          text-align: center;
+          padding: 60px 20px;
+          border: 1px dashed #dddddd;
+          border-radius: 12px;
+          color: #666666;
+        }
+        
+        /* Modal Backdrop */
+        .glamhop-modal-backdrop {
+          position: fixed;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          background-color: rgba(0,0,0,0.4);
+          z-index: 10000;
+          display: none;
+          align-items: center;
+          justify-content: center;
+          padding: 20px;
+        }
+        .glamhop-modal {
+          background-color: #ffffff;
+          border-radius: 16px;
+          max-width: 500px;
+          width: 100%;
+          max-height: 90vh;
+          overflow-y: auto;
+          padding: 30px;
+          box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+        .glamhop-modal-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          border-bottom: 1px solid #eeeeee;
+          padding-bottom: 15px;
+          margin-bottom: 20px;
+        }
+        .glamhop-modal-title {
+          font-size: 18px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+        .glamhop-modal-close {
+          background: none;
+          border: none;
+          font-size: 24px;
+          cursor: pointer;
+        }
+        .glamhop-form-group {
+          margin-bottom: 20px;
+        }
+        .glamhop-label {
+          display: block;
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 8px;
+        }
+        .glamhop-select, .glamhop-textarea {
+          width: 100%;
+          padding: 10px 14px;
+          border: 1px solid #cccccc;
+          border-radius: 6px;
+          font-size: 14px;
+          outline: none;
+          box-sizing: border-box;
+        }
+        .glamhop-textarea {
+          resize: vertical;
+          height: 80px;
+        }
+        .glamhop-file-uploader {
+          border: 1px dashed #cccccc;
+          border-radius: 8px;
+          padding: 20px;
+          text-align: center;
+          cursor: pointer;
+          background-color: #fafafa;
+        }
+        .glamhop-image-previews {
+          display: flex;
+          gap: 10px;
+          margin-top: 10px;
+          flex-wrap: wrap;
+        }
+        .glamhop-preview-slot {
+          width: 60px;
+          height: 60px;
+          border-radius: 4px;
+          overflow: hidden;
+          position: relative;
+          border: 1px solid #eeeeee;
+        }
+        .glamhop-preview-slot img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+        .glamhop-checkbox-group {
+          display: flex;
+          gap: 10px;
+          align-items: flex-start;
+          margin-top: 20px;
+          font-size: 13px;
+          line-height: 1.4;
+        }
+        .glamhop-checkbox-group input {
+          margin-top: 3px;
+        }
+        .glamhop-btn-toggle {
+          background: none;
+          border: none;
+          color: #000000;
+          text-decoration: underline;
+          font-size: 12px;
+          cursor: pointer;
+          padding: 0;
+          margin-top: 10px;
+        }
+        
+        /* Timeline */
+        .glamhop-timeline-wrapper {
+          margin-top: 20px;
+          border-top: 1px dashed #eeeeee;
+          padding-top: 20px;
+        }
+        .glamhop-timeline-steps {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .glamhop-time-step {
+          display: flex;
+          gap: 16px;
+          position: relative;
+        }
+        .glamhop-time-bullet {
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background-color: #d0d0d0;
+          margin-top: 4px;
+          z-index: 2;
+        }
+        .glamhop-time-step:not(:last-child)::after {
+          content: "";
+          position: absolute;
+          left: 4px;
+          top: 14px;
+          bottom: -16px;
+          width: 2px;
+          background-color: #eeeeee;
+          z-index: 1;
+        }
+        .glamhop-time-content {
+          font-size: 13px;
+        }
+        .glamhop-time-title {
+          font-weight: 600;
+        }
+        .glamhop-time-meta {
+          font-size: 11px;
+          color: #808080;
+          margin-top: 2px;
+        }
+        .glamhop-time-desc {
+          color: #555555;
+          margin-top: 4px;
+          font-size: 12px;
+        }
+        .glamhop-rejection-box {
+          background-color: #fff5f5;
+          border: 1px solid #ffe3e3;
+          border-radius: 6px;
+          color: #c53030;
+          font-size: 13px;
+          padding: 12px;
+          margin-bottom: 16px;
+        }
+      </style>
+
+      <div class="glamhop-portal-wrapper">
+        <div class="glamhop-portal-header">
+          <div class="glamhop-greeting">Hello, ${customer?.firstName || "Guest"}</div>
+          <div style="font-size:13px; color:#707070;">${customer?.email || ""}</div>
+        </div>
+
+        <div class="glamhop-tabs-bar">
+          <button id="btn-tab-orders" class="glamhop-tab-btn active" onclick="switchPortalTab('orders')">My Orders</button>
+          <button id="btn-tab-requests" class="glamhop-tab-btn" onclick="switchPortalTab('requests')">My Requests (${dbRequests.length})</button>
+        </div>
+
+        <!-- Orders Section -->
+        <div id="section-orders">
+          ${ordersHtml}
+        </div>
+
+        <!-- Requests Section -->
+        <div id="section-requests" style="display:none;">
+          ${requestsHtml}
+        </div>
+      </div>
+
+      <!-- Action Form Dialog Modal -->
+      <div id="glamhop-modal-form" class="glamhop-modal-backdrop">
+        <div class="glamhop-modal">
+          <div class="glamhop-modal-header">
+            <h3 id="form-type-title" class="glamhop-modal-title">Initiate Return</h3>
+            <button class="glamhop-modal-close" onclick="closePortalForm()">&times;</button>
+          </div>
+          
+          <div style="display:flex; gap:16px; margin-bottom: 24px; border-bottom:1px solid #f9f9f9; padding-bottom:16px;">
+            <img id="form-item-img" src="" style="width:50px; height:70px; object-fit:cover; border-radius:4px;" />
+            <div>
+              <h4 id="form-item-title" style="margin:0 0 4px 0; font-size:14px;"></h4>
+              <span id="form-item-variant" style="font-size:12px; color:#707070;"></span>
+            </div>
+          </div>
+
+          <form id="glamhop-submit-form" onsubmit="handlePortalFormSubmit(event)">
+            <input type="hidden" id="field-type" name="type" />
+            <input type="hidden" id="field-order-id" name="orderId" />
+            <input type="hidden" id="field-order-name" name="orderNumber" />
+            <input type="hidden" id="field-item-id" name="lineItemId" />
+            <input type="hidden" id="field-item-title" name="productTitle" />
+            <input type="hidden" id="field-item-variant" name="variantTitle" />
+            <input type="hidden" id="field-item-img-url" name="imageUrl" />
+            <input type="hidden" id="field-quantity" name="quantity" />
+
+            <!-- Size exchange selector -->
+            <div id="group-exchange-size" class="glamhop-form-group" style="display:none;">
+              <label class="glamhop-label">Select Exchange Size</label>
+              <select id="field-exchange-size" name="requestedSize" class="glamhop-select"></select>
+            </div>
+
+            <div class="glamhop-form-group">
+              <label id="label-reason" class="glamhop-label">Reason for Return</label>
+              <select id="field-reason" name="reason" class="glamhop-select" onchange="toggleOtherReasonField()">
+                ${reasonsOptions}
+              </select>
+            </div>
+
+            <div id="group-other-reason" class="glamhop-form-group" style="display:none;">
+              <label class="glamhop-label">Describe your issue</label>
+              <textarea id="field-other-reason" name="otherReasonText" class="glamhop-textarea" placeholder="Provide more details..."></textarea>
+            </div>
+
+            <div class="glamhop-form-group">
+              <label class="glamhop-label">Upload Images (Maximum 5)</label>
+              <div class="glamhop-file-uploader" onclick="triggerFileInput()">
+                <span style="font-size:13px; color:#666666;">Click to upload JPG, PNG, WEBP proofs</span>
+                <input type="file" id="field-files" multiple accept="image/png, image/jpeg, image/webp" style="display:none;" onchange="handleFileSelections(event)" />
+              </div>
+              <div id="image-previews-container" class="glamhop-image-previews"></div>
+            </div>
+
+            <div class="glamhop-checkbox-group">
+              <input type="checkbox" id="field-confirm" required />
+              <label for="field-confirm">I confirm this product is unused, unopened and follows the GlamHop Policy.</label>
+            </div>
+
+            <button type="submit" class="glamhop-btn-action glamhop-btn-primary" style="width:100%; margin-top:24px; padding:12px 0;">Submit Request</button>
+          </form>
+        </div>
+      </div>
+
+      <script type="text/javascript">
+        let uploadedImagesBase64 = [];
+
+        function switchPortalTab(tab) {
+          document.getElementById('btn-tab-orders').classList.toggle('active', tab === 'orders');
+          document.getElementById('btn-tab-requests').classList.toggle('active', tab === 'requests');
+          
+          document.getElementById('section-orders').style.display = (tab === 'orders') ? 'block' : 'none';
+          document.getElementById('section-requests').style.display = (tab === 'requests') ? 'block' : 'none';
+        }
+
+        function toggleTimeline(reqId) {
+          const block = document.getElementById('timeline-' + reqId);
+          block.style.display = (block.style.display === 'none') ? 'block' : 'none';
+        }
+
+        function openPortalForm(orderId, orderName, itemId, title, variant, imgUrl, qty, type, sizesList) {
+          uploadedImagesBase64 = [];
+          document.getElementById('image-previews-container').innerHTML = '';
+          document.getElementById('glamhop-submit-form').reset();
+
+          // Set hidden values
+          document.getElementById('field-type').value = type;
+          document.getElementById('field-order-id').value = orderId;
+          document.getElementById('field-order-name').value = orderName;
+          document.getElementById('field-item-id').value = itemId;
+          document.getElementById('field-item-title').value = title;
+          document.getElementById('field-item-variant').value = variant;
+          document.getElementById('field-item-img-url').value = imgUrl;
+          document.getElementById('field-quantity').value = qty;
+
+          // Update header layouts
+          document.getElementById('form-type-title').innerText = type === 'RETURN' ? 'Initiate Return' : 'Initiate Exchange';
+          document.getElementById('label-reason').innerText = type === 'RETURN' ? 'Reason for Return' : 'Reason for Exchange';
+          document.getElementById('form-item-img').src = imgUrl;
+          document.getElementById('form-item-title').innerText = title;
+          document.getElementById('form-item-variant').innerText = 'Variant: ' + variant;
+
+          // Toggle exchange size group
+          const sizeSelect = document.getElementById('field-exchange-size');
+          const sizeGroup = document.getElementById('group-exchange-size');
+          if (type === 'EXCHANGE' && sizesList) {
+            sizeSelect.innerHTML = '';
+            sizesList.split(',').forEach(sz => {
+              sizeSelect.innerHTML += '<option value="' + sz + '">' + sz + '</option>';
+            });
+            sizeGroup.style.display = 'block';
+          } else {
+            sizeGroup.style.display = 'none';
+          }
+
+          document.getElementById('group-other-reason').style.display = 'none';
+          document.getElementById('glamhop-modal-form').style.display = 'flex';
+        }
+
+        function closePortalForm() {
+          document.getElementById('glamhop-modal-form').style.display = 'none';
+        }
+
+        function toggleOtherReasonField() {
+          const val = document.getElementById('field-reason').value;
+          document.getElementById('group-other-reason').style.display = (val.toLowerCase() === 'other') ? 'block' : 'none';
+        }
+
+        function triggerFileInput() {
+          document.getElementById('field-files').click();
+        }
+
+        function handleFileSelections(e) {
+          const files = e.target.files;
+          const container = document.getElementById('image-previews-container');
+          
+          const maxFiles = Math.min(files.length, 5 - uploadedImagesBase64.length);
+          for (let i = 0; i < maxFiles; i++) {
+            const file = files[i];
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+              const base64 = evt.target.result;
+              uploadedImagesBase64.push(base64);
+
+              // Render preview slot
+              container.innerHTML += '<div class="glamhop-preview-slot"><img src="' + base64 + '" /></div>';
+            }
+            reader.readAsDataURL(file);
+          }
+        }
+
+        async function handlePortalFormSubmit(e) {
+          e.preventDefault();
+          
+          const body = {
+            type: document.getElementById('field-type').value,
+            orderId: document.getElementById('field-order-id').value,
+            orderNumber: document.getElementById('field-order-name').value,
+            lineItemId: document.getElementById('field-item-id').value,
+            productTitle: document.getElementById('field-item-title').value,
+            variantTitle: document.getElementById('field-item-variant').value,
+            imageUrl: document.getElementById('field-item-img-url').value,
+            quantity: parseInt(document.getElementById('field-quantity').value, 10),
+            reason: document.getElementById('field-reason').value,
+            otherReasonText: document.getElementById('field-other-reason').value || "",
+            requestedSize: document.getElementById('field-exchange-size')?.value || "",
+            images: uploadedImagesBase64
+          };
+
+          try {
+            const response = await fetch(window.location.href, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+            const res = await response.json();
+            if (res.success) {
+              alert('Request submitted successfully!');
+              closePortalForm();
+              window.location.reload();
+            } else {
+              alert(res.error || 'Failed to submit request.');
+            }
+          } catch(err) {
+            console.error(err);
+            alert('An error occurred during submission.');
+          }
+        }
+      </script>
+    `;
+
+    return new Response(liquidTemplate, {
+      headers: {
+        "Content-Type": "application/liquid",
+      },
     });
   } catch (err) {
-    console.error("Error loading storefront loader:", err);
-    return json({
-      customer: null,
-      requests: [],
-      settings: null,
-      shopName,
-      error: "Unable to retrieve account details. Please try again later.",
-      portalStylesUrl: portalStyles,
+    console.error("Error generating liquid template:", err);
+    return new Response("<div style='padding:20px; color:red;'>An error occurred rendering returns portal.</div>", {
+      headers: { "Content-Type": "application/liquid" },
     });
   }
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await shopify.authenticate.public.appProxy(request);
+  if (!session) {
+    return json({ error: "Session missing in request" }, { status: 400 });
+  }
   const shop = session.shop;
 
   const url = new URL(request.url);
@@ -268,648 +1035,3 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ error: error.message || "Failed to submit request" }, { status: 500 });
   }
 };
-
-export default function CustomerPortal() {
-  const { customer, requests, settings, shopName, error, portalStylesUrl } =
-    useLoaderData<typeof loader>();
-
-  const [activeTab, setActiveTab] = useState<"orders" | "requests">("orders");
-  const [selectedFormItem, setSelectedFormItem] = useState<{
-    item: any;
-    orderId: string;
-    orderNumber: string;
-    type: "RETURN" | "EXCHANGE";
-  } | null>(null);
-
-  const [submissionSuccess, setSubmissionSuccess] = useState<any | null>(null);
-  const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
-
-  const orders = customer?.orders?.edges || [];
-  const customerName = `${customer?.firstName || ""} ${customer?.lastName || ""}`.trim();
-  const customerEmail = customer?.email || "";
-
-  // Parse configurations
-  const eligibleCats = settings ? JSON.parse(settings.eligibleCategories) : [];
-  const nonReturnableProds = settings ? JSON.parse(settings.nonReturnableProducts) : [];
-
-  const handleOpenForm = (
-    item: any,
-    orderId: string,
-    orderNumber: string,
-    type: "RETURN" | "EXCHANGE"
-  ) => {
-    const sizeOption = item.variant?.product?.options?.find(
-      (o: any) => o.name.toLowerCase() === "size"
-    );
-    const availableSizes = sizeOption ? sizeOption.values : ["S", "M", "L", "XL", "XXL"];
-
-    const formItem = {
-      ...item,
-      variant: item.variant
-        ? {
-            ...item.variant,
-            availableSizes,
-          }
-        : undefined,
-    };
-
-    setSelectedFormItem({
-      item: formItem,
-      orderId,
-      orderNumber,
-      type,
-    });
-  };
-
-  const handleFormSubmit = async (formData: any) => {
-    const body = {
-      ...formData,
-      customerName,
-      customerEmail,
-    };
-
-    try {
-      const response = await fetch(window.location.href, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
-
-      const resData = await response.json();
-      if (resData.success) {
-        setSubmissionSuccess(resData.request);
-        setSelectedFormItem(null);
-      } else {
-        alert(resData.error || "Failed to submit request. Please try again.");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Submission error. Please try again.");
-    }
-  };
-
-  if (submissionSuccess) {
-    return (
-      <CustomerPortalLayout shopName={shopName}>
-        <link rel="stylesheet" href={portalStylesUrl} />
-        <div style={{ maxWidth: "600px", margin: "0 auto", padding: "60px 20px", textAlign: "center" }}>
-          <div
-            style={{
-              width: "64px",
-              height: "64px",
-              borderRadius: "50%",
-              backgroundColor: "#f4f4f4",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              margin: "0 auto 30px auto",
-              color: "#000000",
-            }}
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="32"
-              height="32"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          </div>
-          <h2
-            style={{
-              fontFamily: "var(--glamhop-font-serif, serif)",
-              fontSize: "24px",
-              marginBottom: "16px",
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-            }}
-          >
-            Request Submitted
-          </h2>
-          <p style={{ fontSize: "15px", color: "#666666", marginBottom: "40px", lineHeight: "1.6" }}>
-            Your request has been submitted successfully and is awaiting review.
-          </p>
-
-          <div
-            style={{
-              border: "1px solid #eeeeee",
-              borderRadius: "12px",
-              padding: "24px",
-              backgroundColor: "#fafafa",
-              marginBottom: "40px",
-              textAlign: "left",
-              fontSize: "14px",
-            }}
-          >
-            <div style={{ marginBottom: "12px", display: "flex", justifyContent: "space-between" }}>
-              <strong>Request ID:</strong>
-              <span>{submissionSuccess.requestId}</span>
-            </div>
-            <div style={{ marginBottom: "12px", display: "flex", justifyContent: "space-between" }}>
-              <strong>Order Number:</strong>
-              <span>{submissionSuccess.orderNumber}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <strong>Status:</strong>
-              <span style={{ fontWeight: 600, textTransform: "uppercase", color: "#e65100" }}>
-                {submissionSuccess.status} (Pending Review)
-              </span>
-            </div>
-          </div>
-
-          <button
-            onClick={() => {
-              setSubmissionSuccess(null);
-              setActiveTab("requests");
-              window.location.reload();
-            }}
-            className="btn-portal btn-portal-primary"
-            style={{ width: "100%", maxWidth: "250px" }}
-          >
-            View My Requests
-          </button>
-        </div>
-      </CustomerPortalLayout>
-    );
-  }
-
-  return (
-    <CustomerPortalLayout shopName={shopName}>
-      <link rel="stylesheet" href={portalStylesUrl} />
-
-      <div className="customer-info">
-        <div className="customer-greeting">
-          Hello, {customer?.firstName || "Guest"}
-        </div>
-        <div>{customer?.email}</div>
-      </div>
-
-      {error && (
-        <div
-          style={{
-            padding: "16px",
-            backgroundColor: "#fef2f2",
-            border: "1px solid #fee2e2",
-            borderRadius: "8px",
-            color: "#991b1b",
-            marginBottom: "24px",
-            fontSize: "14px",
-          }}
-        >
-          {error}
-        </div>
-      )}
-
-      {/* Tab Selectors */}
-      <div
-        style={{
-          display: "flex",
-          borderBottom: "1px solid #eeeeee",
-          marginBottom: "32px",
-        }}
-      >
-        <button
-          onClick={() => setActiveTab("orders")}
-          style={{
-            padding: "12px 24px",
-            fontSize: "13px",
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-            background: "none",
-            border: "none",
-            borderBottom: activeTab === "orders" ? "2px solid #000000" : "none",
-            cursor: "pointer",
-            color: activeTab === "orders" ? "#000000" : "#999999",
-          }}
-        >
-          My Orders
-        </button>
-        <button
-          onClick={() => setActiveTab("requests")}
-          style={{
-            padding: "12px 24px",
-            fontSize: "13px",
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-            background: "none",
-            border: "none",
-            borderBottom: activeTab === "requests" ? "2px solid #000000" : "none",
-            cursor: "pointer",
-            color: activeTab === "requests" ? "#000000" : "#999999",
-          }}
-        >
-          My Requests ({requests.length})
-        </button>
-      </div>
-
-      {activeTab === "orders" ? (
-        orders.length === 0 ? (
-          <div className="empty-portal">
-            <h2>No orders found</h2>
-            <p>We couldn't find any recent purchases associated with your customer account.</p>
-          </div>
-        ) : (
-          <div className="orders-container">
-            {orders.map(({ node: order }: any) => {
-              // 1. Calculate Delivery Date (Order Date + 3 days mock)
-              const orderDate = new Date(order.createdAt);
-              const deliveryDate = new Date(orderDate);
-              deliveryDate.setDate(deliveryDate.getDate() + 3);
-
-              // 2. Perform Eligibility Engine calculations
-              const isDelivered = order.displayFulfillmentStatus === "FULFILLED";
-              const currentDate = new Date();
-              const diffTime = Math.abs(currentDate.getTime() - deliveryDate.getTime());
-              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-              const isWithinReturnWindow = settings ? diffDays <= settings.returnWindowDays : true;
-              const isWithinExchangeWindow = settings ? diffDays <= settings.exchangeWindowDays : true;
-
-              const mappedItems: OrderItem[] = order.lineItems.edges.map(({ node: item }: any) => {
-                // Check existing request in DB
-                const existingItemRequests = requests.filter(
-                  (r) => r.orderId === order.id && r.items.some((i) => i.lineItemId === item.id)
-                );
-                const hasActiveReturn = existingItemRequests.some(
-                  (r) => r.status !== "REJECTED" && r.items.some((i) => i.lineItemId === item.id && i.type === "RETURN")
-                );
-                const hasActiveExchange = existingItemRequests.some(
-                  (r) => r.status !== "REJECTED" && r.items.some((i) => i.lineItemId === item.id && i.type === "EXCHANGE")
-                );
-
-                // Category verification
-                const productType = item.variant?.product?.productType || "";
-                const isCategoryEligible =
-                  eligibleCats.length === 0 || eligibleCats.includes(productType);
-
-                // Excluded products verification
-                const productId = item.variant?.product?.id || "";
-                const isProductReturnable = !nonReturnableProds.includes(productId);
-
-                // Sale items check
-                const isSaleItem =
-                  item.variant?.compareAtPrice &&
-                  parseFloat(item.variant.compareAtPrice) > parseFloat(item.variant.price);
-                const isSaleEligible = settings
-                  ? !isSaleItem || settings.saleItemsEligible
-                  : true;
-
-                // Inventory verification
-                const siblingVariants = item.variant?.product?.variants?.edges || [];
-                const totalInventory = siblingVariants.reduce(
-                  (sum: number, edge: any) => sum + (edge.node.inventoryQuantity || 0),
-                  0
-                );
-                const hasInventory = totalInventory > 0;
-
-                // Final eligibility flags
-                const returnEligible =
-                  isDelivered &&
-                  isWithinReturnWindow &&
-                  !hasActiveReturn &&
-                  isCategoryEligible &&
-                  isProductReturnable &&
-                  isSaleEligible;
-
-                const exchangeEligible =
-                  isDelivered &&
-                  isWithinExchangeWindow &&
-                  !hasActiveExchange &&
-                  isCategoryEligible &&
-                  isProductReturnable &&
-                  isSaleEligible &&
-                  hasInventory;
-
-                // Ineligibility comments
-                const returnIneligibleReason = !isDelivered
-                  ? "Order is not yet delivered"
-                  : !isWithinReturnWindow
-                    ? `Exceeded return period (${settings?.returnWindowDays} days)`
-                    : hasActiveReturn
-                      ? "Return already initiated for this item"
-                      : !isCategoryEligible
-                        ? "Category is not eligible for returns"
-                        : !isProductReturnable
-                          ? "Item is marked non-returnable"
-                          : !isSaleEligible
-                            ? "Sale items are not eligible for returns"
-                            : "";
-
-                const exchangeIneligibleReason = !isDelivered
-                  ? "Order is not yet delivered"
-                  : !isWithinExchangeWindow
-                    ? `Exceeded exchange period (${settings?.exchangeWindowDays} days)`
-                    : hasActiveExchange
-                      ? "Exchange already initiated for this item"
-                      : !isCategoryEligible
-                        ? "Category is not eligible for exchanges"
-                        : !isProductReturnable
-                          ? "Item is marked non-returnable"
-                          : !isSaleEligible
-                            ? "Sale items are not eligible for exchanges"
-                            : !hasInventory
-                              ? "Replacement stock unavailable"
-                              : "";
-
-                return {
-                  id: item.id,
-                  title: item.title,
-                  quantity: item.quantity,
-                  variant: item.variant
-                    ? {
-                        id: item.variant.id,
-                        title: item.variant.title,
-                        image: item.variant.image,
-                        selectedOptions: item.variant.selectedOptions,
-                        product: {
-                          id: item.variant.product?.id || "",
-                          title: item.variant.product?.title || item.title,
-                          options: item.variant.product?.options,
-                        },
-                      }
-                    : undefined,
-                  // Pass calculation properties
-                  returnEligible,
-                  exchangeEligible,
-                  returnIneligibleReason,
-                  exchangeIneligibleReason,
-                };
-              });
-
-              return (
-                <div key={order.id}>
-                  <GlamHopOrderCard
-                    id={order.id}
-                    name={order.name}
-                    createdAt={order.createdAt}
-                    displayFinancialStatus={order.displayFinancialStatus}
-                    displayFulfillmentStatus={order.displayFulfillmentStatus}
-                    items={mappedItems}
-                    onReturn={(item) => handleOpenForm(item, order.id, order.name, "RETURN")}
-                    onExchange={(item) => handleOpenForm(item, order.id, order.name, "EXCHANGE")}
-                  />
-                </div>
-              );
-            })}
-          </div>
-        )
-      ) : requests.length === 0 ? (
-        <div className="empty-portal">
-          <h2>No requests found</h2>
-          <p>You have not submitted any returns or exchanges.</p>
-        </div>
-      ) : (
-        /* Requests Tab (Timeline display) */
-        <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
-          {requests.map((req) => {
-            const isExpanded = expandedRequestId === req.id;
-
-            return (
-              <div
-                key={req.id}
-                style={{
-                  border: "1px solid #eeeeee",
-                  borderRadius: "12px",
-                  padding: "24px",
-                  boxShadow: "var(--glamhop-shadow)",
-                  backgroundColor: "#ffffff",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    borderBottom: "1px solid #eeeeee",
-                    paddingBottom: "12px",
-                    marginBottom: "16px",
-                  }}
-                >
-                  <div>
-                    <h4 style={{ margin: "0 0 4px 0", fontSize: "16px" }}>
-                      Request {req.requestId}
-                    </h4>
-                    <span style={{ fontSize: "12px", color: "#707070" }}>
-                      Submitted {new Date(req.createdAt).toLocaleDateString()} for Order {req.orderNumber}
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                    <span
-                      className="badge"
-                      style={{
-                        textTransform: "uppercase",
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        color:
-                          req.status === "PENDING"
-                            ? "#e65100"
-                            : req.status === "APPROVED"
-                              ? "#2e7d32"
-                              : req.status === "REJECTED"
-                                ? "#c62828"
-                                : "#1565c0",
-                      }}
-                    >
-                      {req.status}
-                    </span>
-                    <span className="badge">{req.type}</span>
-                    <button
-                      onClick={() => setExpandedRequestId(isExpanded ? null : req.id)}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        fontSize: "12px",
-                        cursor: "pointer",
-                        textDecoration: "underline",
-                        padding: "0 4px",
-                        marginLeft: "10px",
-                        fontWeight: 500,
-                      }}
-                    >
-                      {isExpanded ? "Hide Timeline" : "View Timeline"}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Items breakdown */}
-                {req.items.map((item) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      display: "flex",
-                      gap: "16px",
-                      alignItems: "center",
-                      marginBottom: "12px",
-                    }}
-                  >
-                    {item.imageUrl && (
-                      <div style={{ width: "50px", height: "70px", borderRadius: "4px", overflow: "hidden" }}>
-                        <img src={item.imageUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                      </div>
-                    )}
-                    <div style={{ fontSize: "14px" }}>
-                      <div style={{ fontWeight: 600 }}>{item.productTitle}</div>
-                      <div style={{ color: "#707070", fontSize: "12px", marginTop: "2px" }}>
-                        {item.variantTitle && `Variant: ${item.variantTitle}`} • Qty: {item.quantity}
-                      </div>
-                      <div style={{ fontSize: "12px", marginTop: "4px" }}>
-                        <strong>Reason:</strong> {item.reason} {item.otherReasonText && `(${item.otherReasonText})`}
-                        {item.requestedSize && (
-                          <span>
-                            {" "}
-                            • <strong>New Size:</strong> {item.requestedSize}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                {req.status === "REJECTED" && req.rejectionReason && (
-                  <div
-                    style={{
-                      marginTop: "16px",
-                      padding: "12px",
-                      backgroundColor: "#fef2f2",
-                      border: "1px solid #fee2e2",
-                      borderRadius: "6px",
-                      color: "#b91c1c",
-                      fontSize: "13px",
-                    }}
-                  >
-                    <strong>Rejection Reason:</strong> {req.rejectionReason}
-                  </div>
-                )}
-
-                {/* Dynamic Status Timeline Section */}
-                {isExpanded && (
-                  <div
-                    style={{
-                      marginTop: "24px",
-                      borderTop: "1px solid #eeeeee",
-                      paddingTop: "20px",
-                    }}
-                  >
-                    <h5
-                      style={{
-                        margin: "0 0 16px 0",
-                        fontSize: "13px",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.05em",
-                        fontWeight: 600,
-                      }}
-                    >
-                      Request Timeline Tracker
-                    </h5>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                      {req.timeline && req.timeline.length > 0 ? (
-                        req.timeline.map((event, idx) => {
-                          const dateObj = new Date(event.createdAt);
-                          const dateStr = dateObj.toLocaleDateString();
-                          const timeStr = dateObj.toLocaleTimeString([], {
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          });
-
-                          return (
-                            <div
-                              key={event.id}
-                              style={{
-                                display: "flex",
-                                gap: "16px",
-                                position: "relative",
-                              }}
-                            >
-                              {/* Left line indicator */}
-                              <div
-                                style={{
-                                  display: "flex",
-                                  flexDirection: "column",
-                                  alignItems: "center",
-                                  position: "relative",
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    width: "10px",
-                                    height: "10px",
-                                    borderRadius: "50%",
-                                    backgroundColor: idx === req.timeline.length - 1 ? "#000000" : "#d0d0d0",
-                                    zIndex: 2,
-                                  }}
-                                />
-                                {idx < req.timeline.length - 1 && (
-                                  <div
-                                    style={{
-                                      position: "absolute",
-                                      top: "10px",
-                                      bottom: "-16px",
-                                      width: "2px",
-                                      backgroundColor: "#e0e0e0",
-                                      zIndex: 1,
-                                    }}
-                                  />
-                                )}
-                              </div>
-
-                              {/* Event details */}
-                              <div style={{ fontSize: "13px", paddingBottom: "8px" }}>
-                                <div style={{ fontWeight: 600, color: "#000000" }}>{event.title}</div>
-                                <div style={{ fontSize: "11px", color: "#808080", marginTop: "2px" }}>
-                                  {dateStr} • {timeStr}
-                                </div>
-                                {event.description && (
-                                  <div style={{ color: "#555555", marginTop: "4px", fontSize: "12px" }}>
-                                    {event.description}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div style={{ fontSize: "12px", color: "#808080" }}>
-                          No timeline details registered.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Render return/exchange forms */}
-      {selectedFormItem && (
-        <ReturnExchangeForm
-          orderId={selectedFormItem.orderId}
-          orderName={selectedFormItem.orderNumber}
-          type={selectedFormItem.type}
-          item={selectedFormItem.item}
-          deliveryDate={(() => {
-            const devDateObj = new Date();
-            devDateObj.setDate(devDateObj.getDate() + 3);
-            return devDateObj.toLocaleDateString("en-US", {
-              month: "long",
-              day: "numeric",
-              year: "numeric",
-            });
-          })()}
-          onClose={() => setSelectedFormItem(null)}
-          onSubmit={handleFormSubmit}
-        />
-      )}
-    </CustomerPortalLayout>
-  );
-}
