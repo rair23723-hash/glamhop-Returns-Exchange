@@ -1,6 +1,6 @@
 # Learn more about configuring shopify.app.toml at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = ""
+client_id = "961f9c9b428a8886943d8685f7ff1074"
 name = "Glamhop Returns & Exchange"
 handle = "glamhop-returns-exchange"
 application_url = "https://glamhop-returns-exchange.vercel.app"
@@ -21,7 +21,7 @@ redirect_urls = [
 
 [app_proxy]
 url = "https://glamhop-returns-exchange.vercel.app/app/proxy"
-subpath = "glamhop-returns"
+subpath = "returns"
 prefix = "apps"
 
 [webhooks]
