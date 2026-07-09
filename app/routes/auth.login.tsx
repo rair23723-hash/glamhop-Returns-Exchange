@@ -14,6 +14,7 @@ import {
 } from "@shopify/polaris";
 import shopify from "../shopify.server";
 import polarisTranslations from "@shopify/polaris/locales/en.json";
+import "@shopify/polaris/build/esm/styles.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const errors = shopify.loginHeaders({ request });
