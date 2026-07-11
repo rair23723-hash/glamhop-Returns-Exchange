@@ -10,7 +10,7 @@ import prisma from "./db.server";
 
 const baseSessionStorage = new PrismaSessionStorage(prisma);
 
-const sessionStorage = {
+const loggingSessionStorage = {
   storeSession: async (session: any) => {
     console.log("=== [SESSION_STORAGE] storeSession called ===", {
       id: session.id,
@@ -100,7 +100,7 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL!,
   authPathPrefix: "/auth",
-  sessionStorage,
+  sessionStorage: loggingSessionStorage,
   // Private custom app — SingleMerchant, not AppStore
   distribution: AppDistribution.SingleMerchant,
   webhooks: {
