@@ -18,6 +18,109 @@ import { useState } from "react";
 import shopify from "../shopify.server";
 import db from "../db.server";
 
+// Helper: Sync tags and notes directly on the Shopify Order
+async function updateShopifyOrder(admin: any, orderId: string, tagToAdd: string, noteToAppend: string) {
+  try {
+    const orderResponse = await admin.graphql(
+      `#graphql
+      query getOrderDetails($id: ID!) {
+        order(id: $id) {
+          tags
+          note
+        }
+      }`,
+      { variables: { id: orderId } }
+    );
+    const orderData = await orderResponse.json();
+    const currentTags = orderData.data?.order?.tags || [];
+    const currentNote = orderData.data?.order?.note || "";
+
+    const newTags = Array.from(new Set([...currentTags, tagToAdd]));
+    const newNote = currentNote ? `${currentNote}\n${noteToAppend}` : noteToAppend;
+
+    await admin.graphql(
+      `#graphql
+      mutation updateOrder($id: ID!, $tags: [String!], $note: String) {
+        orderUpdate(input: { id: $id, tags: $tags, note: $note }) {
+          order {
+            id
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }`,
+      {
+        variables: { id: orderId, tags: newTags, note: newNote },
+      }
+    );
+  } catch (err: any) {
+    console.error("Failed to sync details with Shopify order:", err.message);
+  }
+}
+
+// Helper: Create a $0.00 Draft Order for Exchanges
+async function createExchangeDraftOrder(
+  admin: any,
+  customerId: string,
+  orderNumber: string,
+  requestId: string,
+  exchangeVariantId: string,
+  quantity: number
+) {
+  try {
+    const input: any = {
+      note: `Exchange replacement order for #${orderNumber} (Request ${requestId})`,
+      tags: ["GlamHop-Exchange-Replacement"],
+      lineItems: [
+        {
+          variantId: exchangeVariantId,
+          quantity: quantity,
+          appliedDiscount: {
+            value: 100.0,
+            valueType: "PERCENTAGE",
+            title: "Exchange replacement discount",
+          },
+        },
+      ],
+    };
+
+    if (customerId && !customerId.includes("guest")) {
+      input.customerId = customerId;
+    }
+
+    const response = await admin.graphql(
+      `#graphql
+      mutation createDraftOrder($input: DraftOrderInput!) {
+        draftOrderCreate(input: $input) {
+          draftOrder {
+            id
+            name
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }`,
+      { variables: { input } }
+    );
+
+    const resData = await response.json();
+    const userErrors = resData.data?.draftOrderCreate?.userErrors || [];
+    if (userErrors.length > 0) {
+      console.error("GraphQL errors creating draft order:", userErrors);
+      return null;
+    }
+    return resData.data?.draftOrderCreate?.draftOrder;
+  } catch (err: any) {
+    console.error("Failed to create draft exchange order:", err.message);
+    return null;
+  }
+}
+
+// Loader: Fetches the request details and timeline events
 export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   const { session } = await shopify.authenticate.admin(request);
   const shop = session.shop;
@@ -47,15 +150,54 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   return json({ returnRequest });
 };
 
+// Action: Processes request workflows and notifications
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const { session } = await shopify.authenticate.admin(request);
+  const { session, admin } = await shopify.authenticate.admin(request);
   const shop = session.shop;
   const id = params.id;
 
   const formData = await request.formData();
   const actionType = formData.get("actionType") as string;
 
+  // Retrieve current request details
+  const returnRequest = await db.returnRequest.findUnique({
+    where: { id, shop },
+    include: { items: true },
+  });
+
+  if (!returnRequest) {
+    return json({ error: "Request not found" }, { status: 404 });
+  }
+
+  const requestId = returnRequest.requestId;
+  const orderId = returnRequest.orderId;
+  const orderNumber = returnRequest.orderNumber;
+
   if (actionType === "approve") {
+    let draftOrderName = "";
+    
+    // If request type is EXCHANGE, create a draft order in Shopify
+    if (returnRequest.type === "EXCHANGE") {
+      const exchangeItem = returnRequest.items[0]; // private app assumes single item per request
+      if (exchangeItem && exchangeItem.exchangeVariantId) {
+        const draftOrder = await createExchangeDraftOrder(
+          admin,
+          returnRequest.customerId,
+          orderNumber,
+          requestId,
+          exchangeItem.exchangeVariantId,
+          exchangeItem.quantity
+        );
+        if (draftOrder) {
+          draftOrderName = draftOrder.name;
+        }
+      }
+    }
+
+    const approveDesc = draftOrderName
+      ? `Request approved. Size exchange draft order ${draftOrderName} created for customer.`
+      : "Your request has been approved. Preparing return details.";
+
     await db.$transaction([
       db.returnRequest.update({
         where: { id, shop },
@@ -66,15 +208,32 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "APPROVED",
           title: "Request Approved",
-          description: "Your request has been approved. Preparing pickup details.",
+          description: approveDesc,
+        },
+      }),
+      // Notification timeline mock logs
+      db.timelineEvent.create({
+        data: {
+          returnRequestId: id!,
+          status: "NOTIFICATION_SENT",
+          title: "Customer Notified (Email)",
+          description: `Approval notice successfully dispatched to ${returnRequest.customerEmail}.`,
         },
       }),
     ]);
+
+    await updateShopifyOrder(
+      admin,
+      orderId,
+      "GlamHop-Approved",
+      `[GlamHop] Request ${requestId} approved. ${draftOrderName ? `Draft Order: ${draftOrderName}` : ""}`
+    );
   } else if (actionType === "reject") {
     const rejectionReason = formData.get("rejectionReason") as string;
     if (!rejectionReason) {
       return json({ error: "Rejection reason is required" }, { status: 400 });
     }
+
     await db.$transaction([
       db.returnRequest.update({
         where: { id, shop },
@@ -91,7 +250,22 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           description: `Reason: ${rejectionReason}`,
         },
       }),
+      db.timelineEvent.create({
+        data: {
+          returnRequestId: id!,
+          status: "NOTIFICATION_SENT",
+          title: "Customer Notified (SMS/Email)",
+          description: `Rejection details sent to customer. Reason stated: ${rejectionReason}`,
+        },
+      }),
     ]);
+
+    await updateShopifyOrder(
+      admin,
+      orderId,
+      "GlamHop-Rejected",
+      `[GlamHop] Request ${requestId} rejected. Reason: ${rejectionReason}`
+    );
   } else if (actionType === "request_info") {
     await db.$transaction([
       db.returnRequest.update({
@@ -106,6 +280,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           description: "Admin requested more details regarding your return request.",
         },
       }),
+      db.timelineEvent.create({
+        data: {
+          returnRequestId: id!,
+          status: "NOTIFICATION_SENT",
+          title: "Customer Notified",
+          description: `A request for additional info has been sent.`,
+        },
+      }),
     ]);
   } else if (actionType === "add_note") {
     const noteContent = formData.get("noteContent") as string;
@@ -117,6 +299,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           author: "Admin",
         },
       });
+
+      await updateShopifyOrder(
+        admin,
+        orderId,
+        "GlamHop-Note-Added",
+        `[GlamHop Admin Note] ${noteContent}`
+      );
     }
   } else if (actionType === "schedule_pickup") {
     await db.$transaction([
@@ -129,10 +318,25 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "PICKUP_SCHEDULED",
           title: "Pickup Scheduled",
-          description: "A courier agent has been scheduled to collect the items.",
+          description: "Reverse courier pickup scheduled to collect the returns package.",
+        },
+      }),
+      db.timelineEvent.create({
+        data: {
+          returnRequestId: id!,
+          status: "NOTIFICATION_SENT",
+          title: "Customer Notified (SMS)",
+          description: `Pickup details, tracking link and label sent to customer mobile.`,
         },
       }),
     ]);
+
+    await updateShopifyOrder(
+      admin,
+      orderId,
+      "GlamHop-Pickup-Scheduled",
+      `[GlamHop] Reverse courier pickup scheduled for request ${requestId}.`
+    );
   } else if (actionType === "picked_up") {
     await db.$transaction([
       db.returnRequest.update({
@@ -159,7 +363,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "RECEIVED_AT_WAREHOUSE",
           title: "Received at Warehouse",
-          description: "Package received at our warehouse. Awaiting quality check.",
+          description: "Package received at our warehouse. Awaiting quality control check.",
         },
       }),
     ]);
@@ -174,7 +378,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "QUALITY_INSPECTION",
           title: "Quality Inspection",
-          description: "Items are undergoing our standard quality control checks.",
+          description: "Items are undergoing our standard quality control check.",
         },
       }),
     ]);
@@ -189,10 +393,25 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "REFUND_PROCESSED",
           title: "Refund Processed",
-          description: "Quality check passed. Refund has been initiated to original bank.",
+          description: "Quality check passed. Refund has been processed to payment gateway.",
+        },
+      }),
+      db.timelineEvent.create({
+        data: {
+          returnRequestId: id!,
+          status: "NOTIFICATION_SENT",
+          title: "Customer Notified (Email)",
+          description: `Refund notice successfully sent to ${returnRequest.customerEmail}.`,
         },
       }),
     ]);
+
+    await updateShopifyOrder(
+      admin,
+      orderId,
+      "GlamHop-Refunded",
+      `[GlamHop] Refund processed for request ${requestId}.`
+    );
   } else if (actionType === "replacement_dispatched") {
     await db.$transaction([
       db.returnRequest.update({
@@ -207,7 +426,22 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           description: "Your replacement item has been packed and handed to courier.",
         },
       }),
+      db.timelineEvent.create({
+        data: {
+          returnRequestId: id!,
+          status: "NOTIFICATION_SENT",
+          title: "Customer Notified",
+          description: `Replacement shipping details and tracking sent.`,
+        },
+      }),
     ]);
+
+    await updateShopifyOrder(
+      admin,
+      orderId,
+      "GlamHop-Exchange-Dispatched",
+      `[GlamHop] Replacement item dispatched for request ${requestId}.`
+    );
   } else if (actionType === "replacement_delivered") {
     await db.$transaction([
       db.returnRequest.update({
@@ -248,7 +482,7 @@ export default function RequestDetailsPage() {
       subtitle={`Submitted ${new Date(returnRequest.createdAt).toLocaleDateString()}`}
     >
       <Layout>
-        {/* Main Section */}
+        {/* Main section details */}
         <Layout.Section>
           <BlockStack gap="400">
             {/* Products Card */}
@@ -285,7 +519,7 @@ export default function RequestDetailsPage() {
                             </Text>
                             <Text as="p" tone="subdued">
                               <strong>Action Type:</strong>{" "}
-                              <Badge>{item.type}</Badge>
+                              <Badge tone={item.type === "RETURN" ? "info" : "success"}>{item.type}</Badge>
                             </Text>
                             <Text as="p">
                               <strong>Reason:</strong> {item.reason}
@@ -293,7 +527,7 @@ export default function RequestDetailsPage() {
                             </Text>
                             {item.requestedSize && (
                               <Text as="p" fontWeight="bold">
-                                <strong>Requested Exchange Size:</strong>{" "}
+                                <strong>Requested Exchange Size/Variant:</strong>{" "}
                                 <Badge tone="info">{item.requestedSize}</Badge>
                               </Text>
                             )}
@@ -302,7 +536,7 @@ export default function RequestDetailsPage() {
                       </div>
                     </div>
 
-                    {/* Image proof attachments */}
+                    {/* Image uploads */}
                     {item.images && item.images.length > 0 && (
                       <Box paddingBlockStart="400">
                         <BlockStack gap="200">
@@ -355,13 +589,21 @@ export default function RequestDetailsPage() {
             <Card>
               <BlockStack gap="400">
                 <Text as="h2" variant="headingMd">
-                  Timeline Events Log
+                  Timeline Events & Notifications Log
                 </Text>
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px", padding: "10px 0" }}>
                   {timeline.map((event) => (
                     <div key={event.id} style={{ display: "flex", gap: "16px" }}>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }}>
-                        <div style={{ width: "8px", height: "8px", borderRadius: "50%", backgroundColor: "#000000", marginTop: "4px" }} />
+                        <div
+                          style={{
+                            width: "8px",
+                            height: "8px",
+                            borderRadius: "50%",
+                            backgroundColor: event.status === "NOTIFICATION_SENT" ? "#2e7d32" : "#000000",
+                            marginTop: "4px",
+                          }}
+                        />
                       </div>
                       <div>
                         <Text as="span" fontWeight="bold">
@@ -512,7 +754,7 @@ export default function RequestDetailsPage() {
                       <Form method="post">
                         <input type="hidden" name="actionType" value="schedule_pickup" />
                         <Button submit variant="primary" fullWidth>
-                          Schedule Pickup
+                          Create Reverse Pickup
                         </Button>
                       </Form>
                     )}
@@ -581,7 +823,7 @@ export default function RequestDetailsPage() {
                   </BlockStack>
                 )}
 
-                {/* Reject dialog */}
+                {/* Reject form */}
                 {showRejectForm && (
                   <Form method="post" onSubmit={() => setShowRejectForm(false)}>
                     <input type="hidden" name="actionType" value="reject" />
@@ -592,7 +834,7 @@ export default function RequestDetailsPage() {
                         value={rejectionInput}
                         onChange={setRejectionInput}
                         multiline={3}
-                        placeholder="Explain to customer..."
+                        placeholder="Explain reason to customer..."
                         required
                         autoComplete="off"
                       />

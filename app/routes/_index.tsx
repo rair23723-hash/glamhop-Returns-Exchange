@@ -4,14 +4,15 @@ import { useLoaderData } from "@remix-run/react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
-  const shop = url.searchParams.get("shop");
+  const shop = url.searchParams.get("shop") || "glamhop.myshopify.com";
 
-  // Redirect to admin portal if shop domain is present in the parameters
-  if (shop) {
-    return redirect(`/app?shop=${shop}`);
+  const searchParams = url.searchParams;
+  if (!searchParams.has("shop")) {
+    searchParams.set("shop", shop);
   }
 
-  return json({ ok: true });
+  // Redirect to admin portal forwarding all parameters
+  return redirect(`/app?${searchParams.toString()}`);
 };
 
 export default function Index() {
