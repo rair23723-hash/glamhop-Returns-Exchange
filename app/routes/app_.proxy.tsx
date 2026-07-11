@@ -879,8 +879,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   } catch (err: any) {
     console.error("Error rendering customer portal:", err);
-    return new Response("<div style='padding:40px; text-align:center; color:red; font-family:sans-serif;'>GlamHop returns portal is temporarily unavailable.</div>", {
-      headers: { "Content-Type": "application/liquid" },
+    await dbLog("PROXY_LOADER_CRITICAL_ERROR", `${err.message}\n${err.stack}`);
+    return new Response(`Error: ${err.message}\n${err.stack}`, {
+      status: 500,
+      headers: { "Content-Type": "text/plain" },
     });
   }
 };
