@@ -3,55 +3,19 @@ import { json } from "@remix-run/node";
 import shopify, { dbLog } from "../shopify.server";
 import db from "../db.server";
 
-// Helper to render diagnostic/error screen
-const renderDiagnostics = (title: string, error: any, request: Request) => {
-  const url = new URL(request.url);
-  const searchParams = Object.fromEntries(url.searchParams.entries());
-  const headers = Object.fromEntries(request.headers.entries());
-
-  return new Response(`
-    <div style="font-family: 'Segoe UI', -apple-system, sans-serif; padding: 40px; max-width: 800px; margin: 40px auto; background: #fff5f5; border: 1px solid #ffcdd2; border-radius: 12px; color: #b71c1c;">
-      <h1 style="margin-top: 0; font-size: 24px; font-weight: 600;">Diagnostic Report: ${title}</h1>
-      <p style="font-size: 15px; font-weight: bold; margin-bottom: 20px;">Error Message: ${error.message || String(error)}</p>
-      
-      <h3 style="margin-top: 30px; font-size: 16px; border-bottom: 1px solid #ffcdd2; padding-bottom: 6px;">Exception Stack Trace:</h3>
-      <pre style="background: #ffebee; padding: 16px; border-radius: 6px; font-family: monospace; font-size: 13px; overflow-x: auto; white-space: pre-wrap;">${error.stack || "No stack trace available"}</pre>
-
-      <h3 style="margin-top: 30px; font-size: 16px; border-bottom: 1px solid #ffcdd2; padding-bottom: 6px;">Request URL & Parameters:</h3>
-      <p><strong>Pathname:</strong> ${url.pathname}</p>
-      <pre style="background: #fafafa; padding: 12px; border: 1px solid #eee; border-radius: 6px; font-size: 13px;">${JSON.stringify(searchParams, null, 2)}</pre>
-
-      <h3 style="margin-top: 30px; font-size: 16px; border-bottom: 1px solid #ffcdd2; padding-bottom: 6px;">Request Headers:</h3>
-      <pre style="background: #fafafa; padding: 12px; border: 1px solid #eee; border-radius: 6px; font-size: 13px;">${JSON.stringify(headers, null, 2)}</pre>
-    </div>
-  `, {
-    status: 200,
-    headers: { "Content-Type": "text/html" }
-  });
-};
-
 // Loader: Renders the Customer Returns Portal via Shopify App Proxy
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await dbLog("PROXY_LOADER_START", request.url);
 
-  let sessionContext;
   try {
-    sessionContext = await shopify.authenticate.public.appProxy(request);
-  } catch (err: any) {
-    console.error("PROXY_LOADER_AUTH_ERROR:", err);
-    await dbLog("PROXY_LOADER_AUTH_ERROR", `${err.message}\n${err.stack}`);
-    return renderDiagnostics("App Proxy Signature Verification Failed", err, request);
-  }
+    const { session } = await shopify.authenticate.public.appProxy(request);
+    if (!session) {
+      await dbLog("PROXY_LOADER_UNAUTHORIZED", "No session found in appProxy context");
+      return new Response("Unauthorized Proxy Signature", { status: 401 });
+    }
 
-  const { session } = sessionContext;
-  if (!session) {
-    await dbLog("PROXY_LOADER_SESSION_MISSING", "No offline session found in context");
-    return renderDiagnostics("Session Missing", new Error("No offline session exists in the database for this shop."), request);
-  }
+    const shop = session.shop;
 
-  const shop = session.shop;
-
-  try {
     // 1. Get or Create App Settings
     let settings = await db.appSettings.findUnique({
       where: { shop },
@@ -869,7 +833,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   } catch (err: any) {
     console.error("Error rendering customer portal:", err);
-    return renderDiagnostics("App Proxy Loader Error", err, request);
+    return new Response("<div style='padding:40px; text-align:center; color:red; font-family:sans-serif;'>GlamHop returns portal is temporarily unavailable.</div>", {
+      headers: { "Content-Type": "application/liquid" },
+    });
   }
 };
 
