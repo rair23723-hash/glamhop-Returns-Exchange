@@ -17,13 +17,29 @@ import polarisTranslations from "@shopify/polaris/locales/en.json";
 import "@shopify/polaris/build/esm/styles.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const errors = shopify.loginHeaders({ request });
-  return json({ errors });
+  try {
+    const errors = shopify.loginHeaders({ request });
+    return json({ errors });
+  } catch (error: any) {
+    console.error("CRITICAL RUNTIME EXCEPTION IN /auth/login LOADER:", error);
+    if (error && error.stack) {
+      console.error(error.stack);
+    }
+    throw error;
+  }
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const errors = await shopify.login(request);
-  return json({ errors });
+  try {
+    const errors = await shopify.login(request);
+    return json({ errors });
+  } catch (error: any) {
+    console.error("CRITICAL RUNTIME EXCEPTION IN /auth/login ACTION:", error);
+    if (error && error.stack) {
+      console.error(error.stack);
+    }
+    throw error;
+  }
 };
 
 export default function Login() {
