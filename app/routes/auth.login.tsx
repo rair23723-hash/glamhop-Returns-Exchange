@@ -18,7 +18,7 @@ import "@shopify/polaris/build/esm/styles.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   try {
-    const errors = shopify.loginHeaders({ request });
+    const errors = await shopify.login(request);
     return json({ errors });
   } catch (error: any) {
     console.error("CRITICAL RUNTIME EXCEPTION IN /auth/login LOADER:", error);
