@@ -56,44 +56,49 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap');
         
         .glamhop-portal {
-          max-width: 750px;
+          max-width: 500px;
           margin: 40px auto;
           font-family: 'Inter', -apple-system, sans-serif;
-          color: #1a1a1a;
+          color: #000000;
           background: #ffffff;
-          border: 1px solid #eaeaea;
-          border-radius: 16px;
-          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.03);
+          border: 1px solid #e5e5e5;
+          border-radius: 0px;
+          box-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
           overflow: hidden;
+          transition: max-width 0.3s ease;
+        }
+
+        .glamhop-portal.wide {
+          max-width: 750px;
         }
 
         .glamhop-header {
-          background: #000000;
-          color: #ffffff;
-          padding: 40px 30px;
+          background: #ffffff;
+          color: #000000;
+          padding: 30px 20px 20px 20px;
           text-align: center;
-          border-bottom: 1px solid #222222;
+          border-bottom: none;
         }
 
         .glamhop-logo {
           font-family: 'Playfair Display', Georgia, serif;
-          font-size: 32px;
+          font-size: 26px;
           font-weight: 600;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.1em;
           text-transform: uppercase;
-          margin-bottom: 6px;
+          margin-bottom: 4px;
         }
 
         .glamhop-subtitle {
-          font-size: 11px;
-          font-weight: 500;
-          letter-spacing: 0.15em;
+          font-size: 10px;
+          font-weight: 600;
+          letter-spacing: 0.2em;
           text-transform: uppercase;
-          color: #a0a0a0;
+          color: #777777;
         }
 
         .glamhop-body {
-          padding: 40px 30px;
+          padding: 10px 30px 40px 30px;
         }
 
         /* Verification Form View */
@@ -106,7 +111,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
 
         .glamhop-view-title {
-          font-size: 20px;
+          font-size: 18px;
           font-weight: 600;
           margin-bottom: 12px;
           text-align: center;
@@ -114,36 +119,66 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
 
         .glamhop-view-desc {
-          font-size: 14px;
+          font-size: 13px;
           color: #666666;
-          margin-bottom: 30px;
+          margin-bottom: 24px;
           text-align: center;
           line-height: 1.5;
         }
 
-        .glamhop-form-group {
+        /* Tabs styling */
+        .glamhop-tabs {
+          display: flex;
+          border-bottom: 1px solid #e5e5e5;
           margin-bottom: 24px;
+        }
+
+        .glamhop-tab-btn {
+          flex: 1;
+          padding: 14px 10px;
+          text-align: center;
+          font-size: 11px;
+          font-weight: 700;
+          color: #888888;
+          cursor: pointer;
+          background: none;
+          border: none;
+          border-bottom: 2px solid transparent;
+          margin-bottom: -1px;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+          transition: all 0.2s;
+        }
+
+        .glamhop-tab-btn.active {
+          color: #000000;
+          border-bottom: 2px solid #000000;
+        }
+
+        .glamhop-form-group {
+          margin-bottom: 20px;
         }
 
         .glamhop-label {
           display: block;
-          font-size: 13px;
-          font-weight: 600;
+          font-size: 10px;
+          font-weight: 700;
           margin-bottom: 8px;
           text-transform: uppercase;
-          letter-spacing: 0.05em;
-          color: #444444;
+          letter-spacing: 0.1em;
+          color: #222222;
         }
 
         .glamhop-input, .glamhop-select, .glamhop-textarea {
           width: 100%;
-          padding: 12px 16px;
-          border: 1px solid #d0d0d0;
-          border-radius: 8px;
-          font-size: 14px;
+          padding: 12px 14px;
+          border: 1px solid #e5e5e5;
+          border-radius: 0px;
+          font-size: 13px;
           outline: none;
           box-sizing: border-box;
           font-family: inherit;
+          color: #000000;
           transition: border-color 0.2s;
         }
 
@@ -157,17 +192,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           color: #ffffff;
           border: none;
           padding: 14px 20px;
-          font-size: 14px;
-          font-weight: 600;
-          border-radius: 8px;
+          font-size: 12px;
+          font-weight: 700;
+          border-radius: 0px;
           cursor: pointer;
           text-transform: uppercase;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.15em;
           transition: background 0.2s;
+          margin-top: 10px;
         }
 
         .glamhop-btn:hover {
-          background: #222222;
+          background: #1c1c1c;
         }
 
         .glamhop-btn-outline {
@@ -185,7 +221,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         .glamhop-order-meta {
           background: #fafafa;
           border: 1px solid #eeeeee;
-          border-radius: 8px;
+          border-radius: 0px;
           padding: 16px;
           margin-bottom: 30px;
           display: flex;
@@ -201,7 +237,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           display: flex;
           gap: 20px;
           border: 1px solid #eeeeee;
-          border-radius: 12px;
+          border-radius: 0px;
           padding: 20px;
           margin-bottom: 20px;
           background: #ffffff;
@@ -217,7 +253,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           width: 80px;
           height: 110px;
           object-fit: cover;
-          border-radius: 8px;
+          border-radius: 0px;
           border: 1px solid #f0f0f0;
           flex-shrink: 0;
         }
@@ -245,9 +281,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
         .glamhop-action-btn {
           padding: 8px 16px;
-          font-size: 12px;
-          font-weight: 600;
-          border-radius: 6px;
+          font-size: 11px;
+          font-weight: 700;
+          border-radius: 0px;
           cursor: pointer;
           text-transform: uppercase;
           letter-spacing: 0.05em;
@@ -271,7 +307,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           background: #fcfcfc;
           border: 1px dashed #dddddd;
           padding: 8px 12px;
-          border-radius: 6px;
+          border-radius: 0px;
           display: inline-block;
         }
 
@@ -292,7 +328,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
         .glamhop-modal {
           background: #ffffff;
-          border-radius: 16px;
+          border-radius: 0px;
           max-width: 520px;
           width: 100%;
           max-height: 90vh;
@@ -317,8 +353,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
 
         .glamhop-modal-title {
-          font-size: 18px;
-          font-weight: 600;
+          font-size: 16px;
+          font-weight: 700;
           text-transform: uppercase;
           letter-spacing: 0.05em;
         }
@@ -334,7 +370,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         /* Image Upload previews */
         .glamhop-uploader {
           border: 2px dashed #cccccc;
-          border-radius: 8px;
+          border-radius: 0px;
           padding: 24px;
           text-align: center;
           cursor: pointer;
@@ -356,7 +392,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         .glamhop-preview-item {
           width: 70px;
           height: 70px;
-          border-radius: 6px;
+          border-radius: 0px;
           overflow: hidden;
           position: relative;
           border: 1px solid #eaeaea;
@@ -372,7 +408,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           display: flex;
           gap: 10px;
           align-items: flex-start;
-          font-size: 13px;
+          font-size: 12px;
           line-height: 1.4;
           color: #555555;
           margin-top: 24px;
@@ -387,7 +423,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           background: #ffebee;
           color: #c62828;
           padding: 12px 16px;
-          border-radius: 8px;
+          border-radius: 0px;
           font-size: 13px;
           margin-bottom: 24px;
           display: none;
@@ -439,31 +475,42 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         <div class="glamhop-body">
           <div id="glamhop-alert-box" class="glamhop-alert"></div>
 
-          <!-- Step 1: Order Verification Lookup -->
+          <!-- Step 1: Order Verification Lookup with Tab Switchers -->
           <div id="view-lookup" class="glamhop-view active">
-            <h2 class="glamhop-view-title">Find Your Order</h2>
-            <p class="glamhop-view-desc">Provide your Order Number OR Tracking ID (AWB) along with your Email Address or Phone Number to verify.</p>
-            
-            <form onsubmit="handleOrderLookup(event)">
-              <div class="glamhop-form-group">
-                <label class="glamhop-label">Order Number</label>
-                <input type="text" id="lookup-order" class="glamhop-input" placeholder="e.g. #1001 (Optional if Tracking ID provided)" />
-              </div>
+            <div class="glamhop-tabs">
+              <button type="button" id="tab-order" class="glamhop-tab-btn active" onclick="switchTab('order')">Order Number</button>
+              <button type="button" id="tab-tracking" class="glamhop-tab-btn" onclick="switchTab('tracking')">Tracking Number</button>
+            </div>
 
-              <div style="text-align: center; margin: 16px 0; font-size: 12px; color: #777777; font-weight: 600; letter-spacing: 0.1em;">— OR —</div>
+            <!-- Order Tab Content -->
+            <div id="tab-content-order" class="glamhop-tab-content">
+              <form onsubmit="handleOrderTabLookup(event)">
+                <div class="glamhop-form-group">
+                  <label class="glamhop-label">Order Number</label>
+                  <input type="text" id="lookup-order" class="glamhop-input" placeholder="e.g. #1001" required />
+                </div>
+                <div class="glamhop-form-group">
+                  <label class="glamhop-label">Email or Phone Number</label>
+                  <input type="text" id="lookup-email-phone-order" class="glamhop-input" placeholder="e.g. client@email.com or +1234567890" required />
+                </div>
+                <button type="submit" class="glamhop-btn">Find Order</button>
+              </form>
+            </div>
 
-              <div class="glamhop-form-group">
-                <label class="glamhop-label">Tracking ID (AWB)</label>
-                <input type="text" id="lookup-tracking" class="glamhop-input" placeholder="e.g. AWB12345678 (Optional if Order Number provided)" />
-              </div>
-
-              <div class="glamhop-form-group">
-                <label class="glamhop-label">Email or Phone Number</label>
-                <input type="text" id="lookup-email-phone" class="glamhop-input" placeholder="e.g. client@email.com or +1234567890" required />
-              </div>
-
-              <button type="submit" class="glamhop-btn">Find Order</button>
-            </form>
+            <!-- Tracking Tab Content -->
+            <div id="tab-content-tracking" class="glamhop-tab-content" style="display: none;">
+              <form onsubmit="handleTrackingTabLookup(event)">
+                <div class="glamhop-form-group">
+                  <label class="glamhop-label">Tracking ID (AWB)</label>
+                  <input type="text" id="lookup-tracking" class="glamhop-input" placeholder="e.g. 1234567890" required />
+                </div>
+                <div class="glamhop-form-group">
+                  <label class="glamhop-label">Email or Phone Number</label>
+                  <input type="text" id="lookup-email-phone-tracking" class="glamhop-input" placeholder="e.g. client@email.com or +1234567890" required />
+                </div>
+                <button type="submit" class="glamhop-btn">Find Order</button>
+              </form>
+            </div>
           </div>
 
           <!-- Step 2: Order Product Selection Portal -->
@@ -485,7 +532,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           <div id="view-submitting" class="glamhop-view">
             <div class="glamhop-spinner-container">
               <div class="glamhop-spinner"></div>
-              <p style="font-weight: 500;">Validating and processing request...</p>
+              <p style="font-weight: 500; font-size: 13px;">Validating and processing request...</p>
             </div>
           </div>
 
@@ -497,8 +544,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             <h2 class="glamhop-view-title" style="margin-bottom: 12px;">Request Submitted</h2>
             <p class="glamhop-view-desc" style="margin-bottom: 24px;">Your request has been submitted successfully.</p>
             
-            <div style="background: #fafafa; border: 1px solid #eeeeee; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 30px;">
-              <span style="font-size: 13px; color: #777777; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Request ID</span>
+            <div style="background: #fafafa; border: 1px solid #eeeeee; border-radius: 0px; padding: 20px; text-align: center; margin-bottom: 30px;">
+              <span style="font-size: 11px; color: #777777; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700;">Request ID</span>
               <strong id="success-request-id" style="font-size: 20px; color: #000000; letter-spacing: 0.05em;"></strong>
             </div>
 
@@ -556,7 +603,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             <div class="glamhop-form-group">
               <label class="glamhop-label">Upload Proof Images (Maximum 6)</label>
               <div class="glamhop-uploader" onclick="triggerPhotoInput()">
-                <span style="font-size: 13px; color: #666666;">Click to upload photos (JPG, PNG, WEBP)</span>
+                <span style="font-size: 12px; color: #666666; font-weight: 500;">Click to upload photos (JPG, PNG, WEBP)</span>
                 <input type="file" id="photo-file-input" multiple accept="image/jpeg,image/png,image/webp" style="display:none;" onchange="handlePhotoUploads(event)" />
               </div>
               <div id="photo-previews" class="glamhop-previews"></div>
@@ -581,8 +628,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         let verifiedOrder = null;
         let selectedItem = null;
         let uploadedBase64Images = [];
+        let activeTab = 'order';
 
         function showView(viewId) {
+          const portal = document.querySelector('.glamhop-portal');
+          if (viewId === 'portal') {
+            portal.classList.add('wide');
+          } else {
+            portal.classList.remove('wide');
+          }
           document.querySelectorAll('.glamhop-view').forEach(v => v.classList.remove('active'));
           document.getElementById('view-' + viewId).classList.add('active');
         }
@@ -604,31 +658,61 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           uploadedBase64Images = [];
           document.getElementById('lookup-order').value = '';
           document.getElementById('lookup-tracking').value = '';
-          document.getElementById('lookup-email-phone').value = '';
+          document.getElementById('lookup-email-phone-order').value = '';
+          document.getElementById('lookup-email-phone-tracking').value = '';
           showAlert('');
           showView('lookup');
         }
 
-        async function handleOrderLookup(e) {
+        function switchTab(tab) {
+          activeTab = tab;
+          showAlert('');
+          
+          document.querySelectorAll('.glamhop-tab-btn').forEach(btn => btn.classList.remove('active'));
+          document.querySelectorAll('.glamhop-tab-content').forEach(content => content.style.display = 'none');
+
+          document.getElementById('tab-' + tab).classList.add('active');
+          document.getElementById('tab-content-' + tab).style.display = 'block';
+        }
+
+        async function handleOrderTabLookup(e) {
           e.preventDefault();
           showAlert('');
 
           const orderNumber = document.getElementById('lookup-order').value;
-          const trackingId = document.getElementById('lookup-tracking').value;
-          const emailOrPhone = document.getElementById('lookup-email-phone').value;
+          const emailOrPhone = document.getElementById('lookup-email-phone-order').value;
 
-          if (!orderNumber && !trackingId) {
-            showAlert('Please enter either an Order Number or a Tracking ID (AWB).');
+          if (!orderNumber || !emailOrPhone) {
+            showAlert('Order Number and Email/Phone are required.');
             return;
           }
 
           showView('submitting');
+          await runOrderLookup({ orderNumber, emailOrPhone });
+        }
 
+        async function handleTrackingTabLookup(e) {
+          e.preventDefault();
+          showAlert('');
+
+          const trackingId = document.getElementById('lookup-tracking').value;
+          const emailOrPhone = document.getElementById('lookup-email-phone-tracking').value;
+
+          if (!trackingId || !emailOrPhone) {
+            showAlert('Tracking ID and Email/Phone are required.');
+            return;
+          }
+
+          showView('submitting');
+          await runOrderLookup({ trackingId, emailOrPhone });
+        }
+
+        async function runOrderLookup(searchParams) {
           try {
             const response = await fetch(window.location.href, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'lookup', orderNumber, trackingId, emailOrPhone })
+              body: JSON.stringify({ action: 'lookup', ...searchParams })
             });
 
             const result = await response.json();
