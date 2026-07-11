@@ -1,28 +1,26 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
-import { Page, Card, Text, BlockStack } from "@shopify/polaris";
 import shopify from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await shopify.authenticate.admin(request);
-  return json({ ok: true });
+  try {
+    await shopify.authenticate.admin(request);
+    return json({ status: "ok" });
+  } catch (error: any) {
+    // Explicitly print the full exception stack trace to Vercel runtime logs
+    console.error("CRITICAL RUNTIME EXCEPTION IN /app LOADER:", error);
+    if (error && error.stack) {
+      console.error(error.stack);
+    }
+    // Re-throw so Remix propagates the error response
+    throw error;
+  }
 };
 
 export default function Index() {
-  useLoaderData<typeof loader>();
   return (
-    <Page title="GlamHop Returns & Exchange">
-      <Card>
-        <BlockStack gap="200">
-          <Text as="h2" variant="headingMd">
-            Embedded Shopify App is working.
-          </Text>
-          <Text as="p" tone="subdued">
-            Authentication and configuration are correct.
-          </Text>
-        </BlockStack>
-      </Card>
-    </Page>
+    <div style={{ padding: "20px", fontFamily: "sans-serif" }}>
+      <h1>Embedded Shopify App is working</h1>
+    </div>
   );
 }
