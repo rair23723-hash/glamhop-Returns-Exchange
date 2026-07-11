@@ -151,7 +151,7 @@ export default function Index() {
           <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
             <Card>
               <BlockStack gap="100">
-                <Text variant="headingXs" tone="subdued">TOTAL RETURNS</Text>
+                <Text variant="headingXs" as="h3" tone="subdued">TOTAL RETURNS</Text>
                 <Text variant="headingXl" as="p">{kpis.total}</Text>
               </BlockStack>
             </Card>
@@ -159,23 +159,23 @@ export default function Index() {
           <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
             <Card>
               <BlockStack gap="100">
-                <Text variant="headingXs" tone="subdued">PENDING REVIEW</Text>
-                <Text variant="headingXl" as="p" tone="attention">{kpis.pending}</Text>
+                <Text variant="headingXs" as="h3" tone="subdued">PENDING REVIEW</Text>
+                <Text variant="headingXl" as="p" tone="caution">{kpis.pending}</Text>
               </BlockStack>
             </Card>
           </Grid.Cell>
           <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
             <Card>
               <BlockStack gap="100">
-                <Text variant="headingXs" tone="subdued">APPROVED</Text>
-                <Text variant="headingXl" as="p" tone="info">{kpis.approved}</Text>
+                <Text variant="headingXs" as="h3" tone="subdued">APPROVED</Text>
+                <Text variant="headingXl" as="p">{kpis.approved}</Text>
               </BlockStack>
             </Card>
           </Grid.Cell>
           <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
             <Card>
               <BlockStack gap="100">
-                <Text variant="headingXs" tone="subdued">REJECTED</Text>
+                <Text variant="headingXs" as="h3" tone="subdued">REJECTED</Text>
                 <Text variant="headingXl" as="p" tone="critical">{kpis.rejected}</Text>
               </BlockStack>
             </Card>
@@ -183,7 +183,7 @@ export default function Index() {
           <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
             <Card>
               <BlockStack gap="100">
-                <Text variant="headingXs" tone="subdued">REFUNDED</Text>
+                <Text variant="headingXs" as="h3" tone="subdued">REFUNDED</Text>
                 <Text variant="headingXl" as="p">{kpis.refunded}</Text>
               </BlockStack>
             </Card>
@@ -191,7 +191,7 @@ export default function Index() {
           <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
             <Card>
               <BlockStack gap="100">
-                <Text variant="headingXs" tone="subdued">EXCHANGED</Text>
+                <Text variant="headingXs" as="h3" tone="subdued">EXCHANGED</Text>
                 <Text variant="headingXl" as="p">{kpis.exchanged}</Text>
               </BlockStack>
             </Card>
@@ -199,7 +199,7 @@ export default function Index() {
           <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
             <Card>
               <BlockStack gap="100">
-                <Text variant="headingXs" tone="subdued">TODAY'S REQUESTS</Text>
+                <Text variant="headingXs" as="h3" tone="subdued">TODAY'S REQUESTS</Text>
                 <Text variant="headingXl" as="p" tone="success">{kpis.todayReturns}</Text>
               </BlockStack>
             </Card>
@@ -207,7 +207,7 @@ export default function Index() {
           <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
             <Card>
               <BlockStack gap="100">
-                <Text variant="headingXs" tone="subdued">THIS MONTH</Text>
+                <Text variant="headingXs" as="h3" tone="subdued">THIS MONTH</Text>
                 <Text variant="headingXl" as="p" tone="success">{kpis.monthlyReturns}</Text>
               </BlockStack>
             </Card>

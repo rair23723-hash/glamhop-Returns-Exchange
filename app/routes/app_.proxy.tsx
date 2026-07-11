@@ -991,7 +991,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }
       );
 
-      const responseData = await response.json();
+      const responseData = (await response.json()) as any;
       
       if (responseData.errors) {
         await dbLog("PROXY_ACTION_GRAPHQL_ERROR", JSON.stringify(responseData.errors));
