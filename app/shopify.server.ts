@@ -29,7 +29,9 @@ const shopify = shopifyApp({
       shopify.registerWebhooks({ session });
     },
   },
-  // No future flags — Token Exchange is App Store only
+  future: {
+    unstable_newEmbeddedAuthStrategy: true,
+  },
 });
 
 export default shopify;
