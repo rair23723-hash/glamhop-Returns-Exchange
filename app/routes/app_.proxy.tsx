@@ -50,20 +50,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const reasonsList = JSON.parse(settings.allowedReasons);
     const reasonsOptions = reasonsList.map((r: string) => `<option value="${r}">${r}</option>`).join("");
 
-    // 2. Render Elegant Returns & Exchange Portal UI
+    // 2. Render Elegant Returns & Exchange Portal UI matching Track Order exactly
     const liquidTemplate = `
       <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap');
         
         .glamhop-portal {
-          max-width: 500px;
-          margin: 40px auto;
-          font-family: 'Inter', -apple-system, sans-serif;
+          max-width: 480px;
+          margin: 60px auto;
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
           color: #000000;
           background: #ffffff;
-          border: 1px solid #e5e5e5;
-          border-radius: 0px;
-          box-shadow: 0 4px 24px rgba(0, 0, 0, 0.05);
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
           overflow: hidden;
           transition: max-width 0.3s ease;
         }
@@ -72,56 +72,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           max-width: 750px;
         }
 
-        .glamhop-header {
-          background: #ffffff;
-          color: #000000;
-          padding: 30px 20px 20px 20px;
-          text-align: center;
-          border-bottom: none;
-        }
-
-        .glamhop-logo {
-          font-family: 'Playfair Display', Georgia, serif;
-          font-size: 26px;
-          font-weight: 600;
-          letter-spacing: 0.1em;
-          text-transform: uppercase;
-          margin-bottom: 4px;
-        }
-
-        .glamhop-subtitle {
-          font-size: 10px;
-          font-weight: 600;
-          letter-spacing: 0.2em;
-          text-transform: uppercase;
-          color: #777777;
-        }
-
         .glamhop-body {
-          padding: 10px 30px 40px 30px;
+          padding: 40px 30px;
         }
 
-        /* Verification Form View */
-        .glamhop-view {
-          display: none;
-        }
-
-        .glamhop-view.active {
-          display: block;
-        }
-
-        .glamhop-view-title {
-          font-size: 18px;
-          font-weight: 600;
-          margin-bottom: 12px;
+        .glamhop-main-title {
+          font-family: 'Inter', -apple-system, sans-serif;
+          font-size: 24px;
+          font-weight: 700;
+          color: #000000;
+          margin: 0 0 8px 0;
           text-align: center;
-          letter-spacing: -0.01em;
+          letter-spacing: -0.02em;
         }
 
-        .glamhop-view-desc {
-          font-size: 13px;
-          color: #666666;
-          margin-bottom: 24px;
+        .glamhop-main-desc {
+          font-size: 14px;
+          color: #718096;
+          margin: 0 0 30px 0;
           text-align: center;
           line-height: 1.5;
         }
@@ -129,25 +97,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         /* Tabs styling */
         .glamhop-tabs {
           display: flex;
-          border-bottom: 1px solid #e5e5e5;
+          border-bottom: 1px solid #e2e8f0;
           margin-bottom: 24px;
         }
 
         .glamhop-tab-btn {
           flex: 1;
-          padding: 14px 10px;
+          padding: 12px 10px;
           text-align: center;
-          font-size: 11px;
-          font-weight: 700;
-          color: #888888;
+          font-size: 13px;
+          font-weight: 600;
+          color: #718096;
           cursor: pointer;
           background: none;
           border: none;
           border-bottom: 2px solid transparent;
           margin-bottom: -1px;
-          text-transform: uppercase;
-          letter-spacing: 0.1em;
-          transition: all 0.2s;
+          transition: all 0.2s ease;
         }
 
         .glamhop-tab-btn.active {
@@ -161,29 +127,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
         .glamhop-label {
           display: block;
-          font-size: 10px;
-          font-weight: 700;
+          font-size: 12px;
+          font-weight: 600;
           margin-bottom: 8px;
-          text-transform: uppercase;
-          letter-spacing: 0.1em;
-          color: #222222;
+          color: #4a5568;
         }
 
         .glamhop-input, .glamhop-select, .glamhop-textarea {
           width: 100%;
-          padding: 12px 14px;
-          border: 1px solid #e5e5e5;
-          border-radius: 0px;
-          font-size: 13px;
+          padding: 12px 16px;
+          border: 1px solid #cbd5e1;
+          border-radius: 6px;
+          font-size: 14px;
           outline: none;
           box-sizing: border-box;
           font-family: inherit;
           color: #000000;
-          transition: border-color 0.2s;
+          background-color: #ffffff;
+          transition: border-color 0.2s, box-shadow 0.2s;
         }
 
         .glamhop-input:focus, .glamhop-select:focus, .glamhop-textarea:focus {
           border-color: #000000;
+          box-shadow: 0 0 0 2px rgba(0,0,0,0.05);
         }
 
         .glamhop-btn {
@@ -192,18 +158,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           color: #ffffff;
           border: none;
           padding: 14px 20px;
-          font-size: 12px;
-          font-weight: 700;
-          border-radius: 0px;
+          font-size: 14px;
+          font-weight: 600;
+          border-radius: 6px;
           cursor: pointer;
-          text-transform: uppercase;
-          letter-spacing: 0.15em;
           transition: background 0.2s;
           margin-top: 10px;
         }
 
         .glamhop-btn:hover {
-          background: #1c1c1c;
+          background: #1e293b;
         }
 
         .glamhop-btn-outline {
@@ -221,7 +185,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         .glamhop-order-meta {
           background: #fafafa;
           border: 1px solid #eeeeee;
-          border-radius: 0px;
+          border-radius: 6px;
           padding: 16px;
           margin-bottom: 30px;
           display: flex;
@@ -237,7 +201,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           display: flex;
           gap: 20px;
           border: 1px solid #eeeeee;
-          border-radius: 0px;
+          border-radius: 6px;
           padding: 20px;
           margin-bottom: 20px;
           background: #ffffff;
@@ -253,7 +217,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           width: 80px;
           height: 110px;
           object-fit: cover;
-          border-radius: 0px;
+          border-radius: 6px;
           border: 1px solid #f0f0f0;
           flex-shrink: 0;
         }
@@ -281,9 +245,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
         .glamhop-action-btn {
           padding: 8px 16px;
-          font-size: 11px;
-          font-weight: 700;
-          border-radius: 0px;
+          font-size: 12px;
+          font-weight: 600;
+          border-radius: 6px;
           cursor: pointer;
           text-transform: uppercase;
           letter-spacing: 0.05em;
@@ -307,7 +271,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           background: #fcfcfc;
           border: 1px dashed #dddddd;
           padding: 8px 12px;
-          border-radius: 0px;
+          border-radius: 6px;
           display: inline-block;
         }
 
@@ -328,7 +292,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
         .glamhop-modal {
           background: #ffffff;
-          border-radius: 0px;
+          border-radius: 8px;
           max-width: 520px;
           width: 100%;
           max-height: 90vh;
@@ -353,8 +317,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
 
         .glamhop-modal-title {
-          font-size: 16px;
-          font-weight: 700;
+          font-size: 18px;
+          font-weight: 600;
           text-transform: uppercase;
           letter-spacing: 0.05em;
         }
@@ -370,7 +334,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         /* Image Upload previews */
         .glamhop-uploader {
           border: 2px dashed #cccccc;
-          border-radius: 0px;
+          border-radius: 6px;
           padding: 24px;
           text-align: center;
           cursor: pointer;
@@ -392,7 +356,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         .glamhop-preview-item {
           width: 70px;
           height: 70px;
-          border-radius: 0px;
+          border-radius: 6px;
           overflow: hidden;
           position: relative;
           border: 1px solid #eaeaea;
@@ -408,7 +372,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           display: flex;
           gap: 10px;
           align-items: flex-start;
-          font-size: 12px;
+          font-size: 13px;
           line-height: 1.4;
           color: #555555;
           margin-top: 24px;
@@ -423,7 +387,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           background: #ffebee;
           color: #c62828;
           padding: 12px 16px;
-          border-radius: 0px;
+          border-radius: 6px;
           font-size: 13px;
           margin-bottom: 24px;
           display: none;
@@ -467,16 +431,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       </style>
 
       <div class="glamhop-portal">
-        <div class="glamhop-header">
-          <div class="glamhop-logo">GlamHop</div>
-          <div class="glamhop-subtitle">Returns & Exchanges</div>
-        </div>
-
         <div class="glamhop-body">
           <div id="glamhop-alert-box" class="glamhop-alert"></div>
 
           <!-- Step 1: Order Verification Lookup with Tab Switchers -->
           <div id="view-lookup" class="glamhop-view active">
+            <h1 class="glamhop-main-title">Return & Exchange</h1>
+            <p class="glamhop-main-desc">Enter your order details below to start your return or exchange request.</p>
+
             <div class="glamhop-tabs">
               <button type="button" id="tab-order" class="glamhop-tab-btn active" onclick="switchTab('order')">Order Number</button>
               <button type="button" id="tab-tracking" class="glamhop-tab-btn" onclick="switchTab('tracking')">Tracking Number</button>
@@ -490,7 +452,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                   <input type="text" id="lookup-order" class="glamhop-input" placeholder="e.g. #1001" required />
                 </div>
                 <div class="glamhop-form-group">
-                  <label class="glamhop-label">Email or Phone Number</label>
+                  <label class="glamhop-label">Email Address or Phone Number</label>
                   <input type="text" id="lookup-email-phone-order" class="glamhop-input" placeholder="e.g. client@email.com or +1234567890" required />
                 </div>
                 <button type="submit" class="glamhop-btn">Find Order</button>
@@ -505,7 +467,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                   <input type="text" id="lookup-tracking" class="glamhop-input" placeholder="e.g. 1234567890" required />
                 </div>
                 <div class="glamhop-form-group">
-                  <label class="glamhop-label">Email or Phone Number</label>
+                  <label class="glamhop-label">Email Address or Phone Number</label>
                   <input type="text" id="lookup-email-phone-tracking" class="glamhop-input" placeholder="e.g. client@email.com or +1234567890" required />
                 </div>
                 <button type="submit" class="glamhop-btn">Find Order</button>
@@ -544,7 +506,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             <h2 class="glamhop-view-title" style="margin-bottom: 12px;">Request Submitted</h2>
             <p class="glamhop-view-desc" style="margin-bottom: 24px;">Your request has been submitted successfully.</p>
             
-            <div style="background: #fafafa; border: 1px solid #eeeeee; border-radius: 0px; padding: 20px; text-align: center; margin-bottom: 30px;">
+            <div style="background: #fafafa; border: 1px solid #eeeeee; border-radius: 6px; padding: 20px; text-align: center; margin-bottom: 30px;">
               <span style="font-size: 11px; color: #777777; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700;">Request ID</span>
               <strong id="success-request-id" style="font-size: 20px; color: #000000; letter-spacing: 0.05em;"></strong>
             </div>
