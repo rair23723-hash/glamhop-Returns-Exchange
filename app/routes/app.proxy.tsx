@@ -30,7 +30,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           nonReturnableProducts: "[]",
           saleItemsEligible: true,
           imageRequired: true,
-          maxImages: 5,
+          maxImages: 6,
           allowedReasons: JSON.stringify([
             "Incorrect Size",
             "Wrong Item Sent",
@@ -439,12 +439,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           <!-- Step 1: Order Verification Lookup -->
           <div id="view-lookup" class="glamhop-view active">
             <h2 class="glamhop-view-title">Find Your Order</h2>
-            <p class="glamhop-view-desc">Enter your Order Number and Email address or Phone number associated with your purchase to start.</p>
+            <p class="glamhop-view-desc">Provide your Order Number OR Tracking ID (AWB) along with your Email Address or Phone Number to verify.</p>
             
             <form onsubmit="handleOrderLookup(event)">
               <div class="glamhop-form-group">
                 <label class="glamhop-label">Order Number</label>
-                <input type="text" id="lookup-order" class="glamhop-input" placeholder="e.g. #1001" required />
+                <input type="text" id="lookup-order" class="glamhop-input" placeholder="e.g. #1001 (Optional if Tracking ID provided)" />
+              </div>
+
+              <div style="text-align: center; margin: 16px 0; font-size: 12px; color: #777777; font-weight: 600; letter-spacing: 0.1em;">— OR —</div>
+
+              <div class="glamhop-form-group">
+                <label class="glamhop-label">Tracking ID (AWB)</label>
+                <input type="text" id="lookup-tracking" class="glamhop-input" placeholder="e.g. AWB12345678 (Optional if Order Number provided)" />
               </div>
 
               <div class="glamhop-form-group">
@@ -485,7 +492,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
             </div>
             <h2 class="glamhop-view-title" style="margin-bottom: 12px;">Request Submitted</h2>
-            <p class="glamhop-view-desc" style="margin-bottom: 24px;">Your request has been successfully created. We will review it shortly.</p>
+            <p class="glamhop-view-desc" style="margin-bottom: 24px;">Your request has been submitted successfully.</p>
             
             <div style="background: #fafafa; border: 1px solid #eeeeee; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 30px;">
               <span style="font-size: 13px; color: #777777; display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em;">Request ID</span>
@@ -544,7 +551,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             </div>
 
             <div class="glamhop-form-group">
-              <label class="glamhop-label">Upload Proof Images (Maximum 5)</label>
+              <label class="glamhop-label">Upload Proof Images (Maximum 6)</label>
               <div class="glamhop-uploader" onclick="triggerPhotoInput()">
                 <span style="font-size: 13px; color: #666666;">Click to upload photos (JPG, PNG, WEBP)</span>
                 <input type="file" id="photo-file-input" multiple accept="image/jpeg,image/png,image/webp" style="display:none;" onchange="handlePhotoUploads(event)" />
@@ -593,6 +600,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           selectedItem = null;
           uploadedBase64Images = [];
           document.getElementById('lookup-order').value = '';
+          document.getElementById('lookup-tracking').value = '';
           document.getElementById('lookup-email-phone').value = '';
           showAlert('');
           showView('lookup');
@@ -601,16 +609,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         async function handleOrderLookup(e) {
           e.preventDefault();
           showAlert('');
-          showView('submitting');
 
           const orderNumber = document.getElementById('lookup-order').value;
+          const trackingId = document.getElementById('lookup-tracking').value;
           const emailOrPhone = document.getElementById('lookup-email-phone').value;
+
+          if (!orderNumber && !trackingId) {
+            showAlert('Please enter either an Order Number or a Tracking ID (AWB).');
+            return;
+          }
+
+          showView('submitting');
 
           try {
             const response = await fetch(window.location.href, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'lookup', orderNumber, emailOrPhone })
+              body: JSON.stringify({ action: 'lookup', orderNumber, trackingId, emailOrPhone })
             });
 
             const result = await response.json();
@@ -653,11 +668,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             if (isEligibleRet) {
               actionButtonsHtml += '<button class="glamhop-action-btn glamhop-btn-ret" onclick="openActionModal(\\'RETURN\\', \\'' + item.id + '\\', \\'' + item.title.replace(/'/g, "\\'") + '\\', \\'' + (item.variant?.title || '').replace(/'/g, "\\'") + '\\', \\'' + (item.variant?.image?.url || '') + '\\', \\'' + variantsArg + '\\')">Return</button>';
             } else {
-              actionButtonsHtml += '<span class="glamhop-ineligible">Return blocked: ' + item.returnEligibility.reason + '</span>';
+              actionButtonsHtml += '<span class="glamhop-ineligible">Return window has expired.</span>';
             }
 
             if (isEligibleExc) {
               actionButtonsHtml += '<button class="glamhop-action-btn glamhop-btn-exc" onclick="openActionModal(\\'EXCHANGE\\', \\'' + item.id + '\\', \\'' + item.title.replace(/'/g, "\\'") + '\\', \\'' + (item.variant?.title || '').replace(/'/g, "\\'") + '\\', \\'' + (item.variant?.image?.url || '') + '\\', \\'' + variantsArg + '\\')">Exchange</button>';
+            } else if (!isEligibleRet) {
+              // Only print expiry notice once if return is also expired
+              actionButtonsHtml += ''; 
             } else {
               actionButtonsHtml += '<span class="glamhop-ineligible" style="margin-left: 8px;">Exchange blocked: ' + item.exchangeEligibility.reason + '</span>';
             }
@@ -670,6 +688,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                 <div class="glamhop-prod-details">
                   <h3 class="glamhop-prod-title">\${item.title}</h3>
                   <div class="glamhop-prod-variant">Variant: \${item.variant?.title || 'Default'} • Qty: \${item.quantity}</div>
+                  <div class="glamhop-prod-variant" style="margin-top:-6px; color:#555;">Delivery Date: \${item.estimatedDeliveryDate || 'N/A'}</div>
                   <div class="glamhop-prod-actions">
                     \${actionButtonsHtml}
                   </div>
@@ -738,7 +757,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           const files = e.target.files;
           const container = document.getElementById('photo-previews');
           
-          const maxFiles = Math.min(files.length, 5 - uploadedBase64Images.length);
+          const maxFiles = Math.min(files.length, 6 - uploadedBase64Images.length);
           for (let i = 0; i < maxFiles; i++) {
             const file = files[i];
             const reader = new FileReader();
@@ -832,15 +851,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // A. Verify Order & Check Eligibility
     if (actionType === "lookup") {
-      const { orderNumber, emailOrPhone } = payload;
-      if (!orderNumber || !emailOrPhone) {
-        return json({ error: "Order number and verification detail are required." }, { status: 400 });
+      const { orderNumber, trackingId, emailOrPhone } = payload;
+      if (!emailOrPhone) {
+        return json({ error: "Email or Phone Number is required." }, { status: 400 });
+      }
+      if (!orderNumber && !trackingId) {
+        return json({ error: "Please enter either an Order Number or a Tracking ID (AWB)." }, { status: 400 });
       }
 
-      // Query order details matching name via Admin GraphQL
+      let searchQuery = "";
+      if (orderNumber) {
+        searchQuery = `name:${orderNumber.trim()}`;
+      } else if (trackingId) {
+        searchQuery = `tracking_number:${trackingId.trim()}`;
+      }
+
+      // Query order details matching name or tracking number via Admin GraphQL
       const response = await admin.graphql(
         `#graphql
-        query getOrderByName($query: String!) {
+        query getOrders($query: String!) {
           orders(first: 5, query: $query) {
             edges {
               node {
@@ -856,6 +885,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                   lastName
                   email
                   phone
+                }
+                fulfillments(first: 5) {
+                  createdAt
+                  trackingInfo(first: 5) {
+                    number
+                  }
                 }
                 lineItems(first: 30) {
                   edges {
@@ -895,7 +930,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }`,
         {
           variables: {
-            query: `name:${orderNumber.trim()}`,
+            query: searchQuery,
           },
         }
       );
@@ -906,9 +941,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       // Find precise order and verify email/phone match
       const emailOrPhoneNormalized = emailOrPhone.trim().toLowerCase();
       const matchedOrderEdge = orders.find(({ node: order }: any) => {
-        const orderNameMatch = order.name.toLowerCase() === orderNumber.trim().toLowerCase() ||
-                               order.name.toLowerCase() === `#${orderNumber.trim().toLowerCase()}`;
-        if (!orderNameMatch) return false;
+        let isMatch = false;
+        if (orderNumber) {
+          isMatch = order.name.toLowerCase() === orderNumber.trim().toLowerCase() ||
+                    order.name.toLowerCase() === `#${orderNumber.trim().toLowerCase()}`;
+        } else if (trackingId) {
+          isMatch = order.fulfillments?.some((f: any) => 
+            f.trackingInfo?.some((t: any) => t.number?.trim().toLowerCase() === trackingId.trim().toLowerCase())
+          );
+        }
+
+        if (!isMatch) return false;
 
         const customerEmail = (order.email || order.customer?.email || "").toLowerCase();
         const customerPhone = (order.phone || order.customer?.phone || "").replace(/\D/g, "");
@@ -926,26 +969,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       const order = matchedOrderEdge.node;
 
-      // Load Settings to check eligibility
-      const settings = await db.appSettings.findUnique({ where: { shop } });
-      const returnWindowDays = settings?.returnWindowDays ?? 30;
-      const exchangeWindowDays = settings?.exchangeWindowDays ?? 30;
-      const saleItemsEligible = settings?.saleItemsEligible ?? true;
-
-      // Map line items with detailed eligibility calculations
-      const orderDate = new Date(order.createdAt);
-      const deliveryDate = new Date(orderDate);
-      deliveryDate.setDate(deliveryDate.getDate() + 3); // estimated delivery: order date + 3 days
+      // 7-day post-delivery window eligibility calculation
+      const isDelivered = order.displayFulfillmentStatus === "FULFILLED";
+      
+      let deliveryDate = new Date(order.createdAt);
+      if (isDelivered && order.fulfillments && order.fulfillments.length > 0) {
+        const lastFulfillment = order.fulfillments[order.fulfillments.length - 1];
+        const fulfillmentDate = new Date(lastFulfillment.createdAt);
+        // Estimate delivery date as 3 days after fulfillment creation date
+        deliveryDate = new Date(fulfillmentDate);
+        deliveryDate.setDate(deliveryDate.getDate() + 3);
+      } else {
+        // Fallback: estimate 3 days after order date
+        deliveryDate.setDate(deliveryDate.getDate() + 3);
+      }
 
       const currentDate = new Date();
-      const diffTime = Math.abs(currentDate.getTime() - deliveryDate.getTime());
+      const diffTime = currentDate.getTime() - deliveryDate.getTime();
       const elapsedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-      const isDelivered = order.displayFulfillmentStatus === "FULFILLED";
-      const withinReturnWindow = elapsedDays <= returnWindowDays;
-      const withinExchangeWindow = elapsedDays <= exchangeWindowDays;
+      const withinWindow = isDelivered && elapsedDays <= 7;
 
-      // Fetch any existing requests for this order
+      // Fetch any existing requests for this order to prevent duplicate requests
       const existingRequests = await db.returnRequest.findMany({
         where: { shop, orderId: order.id, status: { not: "REJECTED" } },
         include: { items: true },
@@ -955,9 +1000,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         const hasActiveReturn = existingRequests.some(r => r.items.some(i => i.lineItemId === item.id && i.type === "RETURN"));
         const hasActiveExchange = existingRequests.some(r => r.items.some(i => i.lineItemId === item.id && i.type === "EXCHANGE"));
 
-        const isSale = item.variant?.compareAtPrice && parseFloat(item.variant.compareAtPrice) > parseFloat(item.variant.price);
-        const isSaleAllowed = !isSale || saleItemsEligible;
-
         const siblingVariants = item.variant?.product?.variants?.edges?.map(({ node: v }: any) => ({
           id: v.id,
           title: v.title,
@@ -966,35 +1008,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
         const totalInventory = siblingVariants.reduce((sum: number, v: any) => sum + (v.inventoryQuantity || 0), 0);
 
-        const retEligible = isDelivered && withinReturnWindow && !hasActiveReturn && isSaleAllowed;
-        const excEligible = isDelivered && withinExchangeWindow && !hasActiveExchange && isSaleAllowed && totalInventory > 0;
+        const retEligible = isDelivered && withinWindow && !hasActiveReturn;
+        const excEligible = isDelivered && withinWindow && !hasActiveExchange && totalInventory > 0;
 
         const returnReason = !isDelivered
           ? "Item has not been fulfilled yet."
-          : !withinReturnWindow
-            ? `Exceeded the return window of ${returnWindowDays} days.`
+          : !withinWindow
+            ? "Exceeded 7 days return window after delivery."
             : hasActiveReturn
               ? "A return request is already active for this item."
-              : !isSaleAllowed
-                ? "Sale/discounted items are not eligible for returns."
-                : "";
+              : "";
 
         const exchangeReason = !isDelivered
           ? "Item has not been fulfilled yet."
-          : !withinExchangeWindow
-            ? `Exceeded the exchange window of ${exchangeWindowDays} days.`
+          : !withinWindow
+            ? "Exceeded 7 days exchange window after delivery."
             : hasActiveExchange
               ? "An exchange request is already active for this item."
-              : !isSaleAllowed
-                ? "Sale/discounted items are not eligible for exchanges."
-                : totalInventory === 0
-                  ? "Item variant options are currently out of stock."
-                  : "";
+              : totalInventory === 0
+                ? "Item variant options are currently out of stock."
+                : "";
 
         return {
           id: item.id,
           title: item.title,
           quantity: item.quantity,
+          estimatedDeliveryDate: deliveryDate.toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric"
+          }),
           variant: {
             id: item.variant?.id,
             title: item.variant?.title,
