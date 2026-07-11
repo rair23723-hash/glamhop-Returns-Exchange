@@ -51,7 +51,7 @@ export default function Login() {
       <Page>
         <Box paddingBlockStart="160" paddingBlockEnd="160">
           <Card>
-            <Form method="post">
+            <Form method="post" target="_top">
               <FormLayout>
                 <Text as="h1" variant="headingMd">
                   Log in to GlamHop Returns & Exchange
