@@ -9,14 +9,15 @@ import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prism
 import prisma from "./db.server";
 
 const shopify = shopifyApp({
-  apiKey: process.env.SHOPIFY_API_KEY || "placeholder_api_key",
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "placeholder_api_secret",
+  apiKey: process.env.SHOPIFY_API_KEY!,
+  apiSecretKey: process.env.SHOPIFY_API_SECRET!,
   apiVersion: LATEST_API_VERSION,
-  scopes: (process.env.SCOPES || "write_orders,read_orders,read_customers").split(","),
-  appUrl: process.env.SHOPIFY_APP_URL || "https://glamhop-returns-exchange.vercel.app",
+  scopes: process.env.SCOPES?.split(","),
+  appUrl: process.env.SHOPIFY_APP_URL!,
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
-  distribution: AppDistribution.AppStore,
+  // Private custom app — SingleMerchant, not AppStore
+  distribution: AppDistribution.SingleMerchant,
   webhooks: {
     APP_UNINSTALLED: {
       deliveryMethod: DeliveryMethod.Http,
@@ -28,9 +29,7 @@ const shopify = shopifyApp({
       shopify.registerWebhooks({ session });
     },
   },
-  future: {
-    unstable_newEmbeddedAuthStrategy: true,
-  },
+  // No future flags — Token Exchange is App Store only
 });
 
 export default shopify;

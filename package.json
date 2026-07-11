@@ -9,6 +9,7 @@
     "config:link": "shopify app config link",
     "generate": "shopify app generate",
     "setup": "prisma generate && prisma db push",
+    "postinstall": "prisma generate",
     "start": "remix-serve ./build/server/index.js",
     "typecheck": "tsc"
   },
