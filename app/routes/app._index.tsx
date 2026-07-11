@@ -1,18 +1,25 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import shopify from "../shopify.server";
+import shopify, { dbLog } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  await dbLog("APP_INDEX_LOADER_START", request.url);
   try {
-    await shopify.authenticate.admin(request);
+    const context = await shopify.authenticate.admin(request);
+    await dbLog("APP_INDEX_LOADER_SUCCESS", `shop: ${context?.session?.shop}`);
     return json({ status: "ok" });
   } catch (error: any) {
-    // Explicitly print the full exception stack trace to Vercel runtime logs
-    console.error("CRITICAL RUNTIME EXCEPTION IN /app LOADER:", error);
-    if (error && error.stack) {
-      console.error(error.stack);
+    if (error instanceof Response) {
+      await dbLog(
+        "APP_INDEX_LOADER_REDIRECT",
+        `status: ${error.status}, location: ${error.headers.get("location")}`
+      );
+    } else {
+      await dbLog(
+        "APP_INDEX_LOADER_ERROR",
+        `${error.message}\n${error.stack}`
+      );
     }
-    // Re-throw so Remix propagates the error response
     throw error;
   }
 };

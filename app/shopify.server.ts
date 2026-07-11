@@ -10,84 +10,81 @@ import prisma from "./db.server";
 
 const baseSessionStorage = new PrismaSessionStorage(prisma);
 
+export const dbLog = async (stage: string, message: string) => {
+  try {
+    await prisma.session.create({
+      data: {
+        id: `db_log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        shop: "glamhop-logs.myshopify.com",
+        state: stage,
+        accessToken: message,
+        isOnline: false,
+      },
+    });
+  } catch (e: any) {
+    console.error("Failed to write db log:", e.message);
+  }
+};
+
 const loggingSessionStorage = {
   storeSession: async (session: any) => {
-    console.log("=== [SESSION_STORAGE] storeSession called ===", {
+    const details = JSON.stringify({
       id: session.id,
       shop: session.shop,
       isOnline: session.isOnline,
       expires: session.expires,
     });
+    await dbLog("STORE_SESSION_START", details);
     try {
       const result = await baseSessionStorage.storeSession(session);
-      console.log("=== [SESSION_STORAGE] storeSession SUCCESS ===", result);
+      await dbLog("STORE_SESSION_SUCCESS", `Result: ${result}`);
       return result;
     } catch (error: any) {
-      console.error("=== [SESSION_STORAGE] storeSession ERROR ===", error);
-      if (error && error.stack) {
-        console.error(error.stack);
-      }
+      await dbLog("STORE_SESSION_ERROR", `${error.message}\n${error.stack}`);
       throw error;
     }
   },
   loadSession: async (id: string) => {
-    console.log("=== [SESSION_STORAGE] loadSession called ===", { id });
+    await dbLog("LOAD_SESSION_START", `id: ${id}`);
     try {
       const result = await baseSessionStorage.loadSession(id);
-      console.log("=== [SESSION_STORAGE] loadSession SUCCESS ===", {
-        found: !!result,
-        shop: result?.shop,
-      });
+      await dbLog("LOAD_SESSION_SUCCESS", `found: ${!!result}`);
       return result;
     } catch (error: any) {
-      console.error("=== [SESSION_STORAGE] loadSession ERROR ===", error);
-      if (error && error.stack) {
-        console.error(error.stack);
-      }
+      await dbLog("LOAD_SESSION_ERROR", `${error.message}\n${error.stack}`);
       throw error;
     }
   },
   deleteSession: async (id: string) => {
-    console.log("=== [SESSION_STORAGE] deleteSession called ===", { id });
+    await dbLog("DELETE_SESSION_START", `id: ${id}`);
     try {
       const result = await baseSessionStorage.deleteSession(id);
-      console.log("=== [SESSION_STORAGE] deleteSession SUCCESS ===", result);
+      await dbLog("DELETE_SESSION_SUCCESS", `Result: ${result}`);
       return result;
     } catch (error: any) {
-      console.error("=== [SESSION_STORAGE] deleteSession ERROR ===", error);
-      if (error && error.stack) {
-        console.error(error.stack);
-      }
+      await dbLog("DELETE_SESSION_ERROR", `${error.message}\n${error.stack}`);
       throw error;
     }
   },
   deleteSessions: async (ids: string[]) => {
-    console.log("=== [SESSION_STORAGE] deleteSessions called ===", { ids });
+    await dbLog("DELETE_SESSIONS_START", `ids: ${ids.join(",")}`);
     try {
       const result = await baseSessionStorage.deleteSessions(ids);
-      console.log("=== [SESSION_STORAGE] deleteSessions SUCCESS ===", result);
+      await dbLog("DELETE_SESSIONS_SUCCESS", `Result: ${result}`);
       return result;
     } catch (error: any) {
-      console.error("=== [SESSION_STORAGE] deleteSessions ERROR ===", error);
-      if (error && error.stack) {
-        console.error(error.stack);
-      }
+      await dbLog("DELETE_SESSIONS_ERROR", `${error.message}\n${error.stack}`);
       throw error;
     }
   },
   findSessionsByShop: async (shop: string) => {
-    console.log("=== [SESSION_STORAGE] findSessionsByShop called ===", { shop });
+    await dbLog("FIND_SESSIONS_START", `shop: ${shop}`);
     try {
       const result = await baseSessionStorage.findSessionsByShop(shop);
-      console.log("=== [SESSION_STORAGE] findSessionsByShop SUCCESS ===", {
-        count: result?.length,
-      });
+      await dbLog("FIND_SESSIONS_SUCCESS", `count: ${result?.length}`);
       return result;
     } catch (error: any) {
-      console.error("=== [SESSION_STORAGE] findSessionsByShop ERROR ===", error);
-      if (error && error.stack) {
-        console.error(error.stack);
-      }
+      await dbLog("FIND_SESSIONS_ERROR", `${error.message}\n${error.stack}`);
       throw error;
     }
   },
