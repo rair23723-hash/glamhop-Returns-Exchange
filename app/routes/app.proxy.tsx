@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import shopify from "../shopify.server";
+import shopify, { dbLog } from "../shopify.server";
 import db from "../db.server";
 
 // Loader: Renders the Customer Returns Portal via Shopify App Proxy
@@ -838,25 +838,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 // Action: Processes storefront lookup and request submissions
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session, admin } = await shopify.authenticate.public.appProxy(request);
-  if (!session || !admin) {
-    return json({ error: "Unauthorized signed proxy request" }, { status: 401 });
-  }
-
-  const shop = session.shop;
+  await dbLog("PROXY_ACTION_START", request.url);
 
   try {
+    const { session, admin } = await shopify.authenticate.public.appProxy(request);
+    if (!session || !admin) {
+      await dbLog("PROXY_ACTION_UNAUTHORIZED", `Unauthorized signed proxy request: ${request.url}`);
+      return json({ success: false, error: "Unauthorized signed proxy request" }, { status: 401 });
+    }
+
+    const shop = session.shop;
     const payload = await request.json();
+    await dbLog("PROXY_ACTION_PARAMS", JSON.stringify(payload));
     const { action: actionType } = payload;
 
     // A. Verify Order & Check Eligibility
     if (actionType === "lookup") {
       const { orderNumber, trackingId, emailOrPhone } = payload;
       if (!emailOrPhone) {
-        return json({ error: "Email or Phone Number is required." }, { status: 400 });
+        return json({ success: false, error: "Email or Phone Number is required." }, { status: 400 });
       }
       if (!orderNumber && !trackingId) {
-        return json({ error: "Please enter either an Order Number or a Tracking ID (AWB)." }, { status: 400 });
+        return json({ success: false, error: "Please enter either an Order Number or a Tracking ID (AWB)." }, { status: 400 });
       }
 
       let searchQuery = "";
@@ -865,6 +868,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       } else if (trackingId) {
         searchQuery = `tracking_number:${trackingId.trim()}`;
       }
+
+      await dbLog("PROXY_ACTION_QUERY", searchQuery);
 
       // Query order details matching name or tracking number via Admin GraphQL
       const response = await admin.graphql(
@@ -886,9 +891,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                   email
                   phone
                 }
-                fulfillments(first: 5) {
+                fulfillments {
                   createdAt
-                  trackingInfo(first: 5) {
+                  trackingInfo {
                     number
                   }
                 }
@@ -936,7 +941,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       );
 
       const responseData = await response.json();
+      
+      if (responseData.errors) {
+        await dbLog("PROXY_ACTION_GRAPHQL_ERROR", JSON.stringify(responseData.errors));
+        return json({ success: false, error: `Shopify API Error: ${responseData.errors[0]?.message}` }, { status: 500 });
+      }
+
       const orders = responseData.data?.orders?.edges || [];
+      await dbLog("PROXY_ACTION_ORDERS_FOUND", `Count: ${orders.length}`);
 
       // Find precise order and verify email/phone match
       const emailOrPhoneNormalized = emailOrPhone.trim().toLowerCase();
@@ -964,10 +976,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
 
       if (!matchedOrderEdge) {
-        return json({ error: "No matching order found with the provided details." }, { status: 404 });
+        await dbLog("PROXY_ACTION_ORDER_MISMATCH", `No matching order found for query: ${searchQuery} & identity: ${emailOrPhone}`);
+        return json({ success: false, error: "No matching order found with the provided details." }, { status: 404 });
       }
 
       const order = matchedOrderEdge.node;
+      await dbLog("PROXY_ACTION_ORDER_MATCHED", `Order Name: ${order.name}`);
 
       // 7-day post-delivery window eligibility calculation
       const isDelivered = order.displayFulfillmentStatus === "FULFILLED";
@@ -989,6 +1003,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const elapsedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
       const withinWindow = isDelivered && elapsedDays <= 7;
+      await dbLog("PROXY_ACTION_ELIGIBILITY", `isDelivered: ${isDelivered}, elapsedDays: ${elapsedDays}, withinWindow: ${withinWindow}`);
 
       // Fetch any existing requests for this order to prevent duplicate requests
       const existingRequests = await db.returnRequest.findMany({
@@ -1177,12 +1192,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         console.error("Failed to tag Shopify order:", err.message);
       }
 
+      await dbLog("PROXY_ACTION_REQUEST_CREATED", `Request ID: ${requestId}`);
       return json({ success: true, requestId });
     }
 
-    return json({ error: "Unsupported action type" }, { status: 400 });
+    return json({ success: false, error: "Unsupported action type" }, { status: 400 });
   } catch (error: any) {
-    console.error("Action error in app.proxy.tsx:", error);
-    return json({ error: error.message || "An unexpected error occurred" }, { status: 500 });
+    console.error("CRITICAL ERROR IN PROXY ACTION:", error);
+    await dbLog("PROXY_ACTION_ERROR", `${error.message}\n${error.stack}`);
+    return json({ success: false, error: error.message || "An unexpected error occurred" }, { status: 500 });
   }
 };
