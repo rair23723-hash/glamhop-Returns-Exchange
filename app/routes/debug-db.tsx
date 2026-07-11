@@ -30,9 +30,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const dbCheck = await db.$queryRaw`SELECT 1 as connected`;
     results.dbConnection = `Connected: ${JSON.stringify(dbCheck)}`;
 
-    // 2. Check each table count
+    // 2. Check each table count and contents
     try {
       results.tables.Session = await db.session.count();
+      results.sessionsList = await db.session.findMany();
     } catch (e: any) {
       results.tables.Session = `Error: ${e.message}`;
     }

@@ -7,11 +7,40 @@ import { boundary } from "@shopify/shopify-app-remix/server";
 import shopify from "../shopify.server";
 import polarisTranslations from "@shopify/polaris/locales/en.json";
 
+import db from "../db.server";
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await shopify.authenticate.admin(request);
-  return json({
-    apiKey: process.env.SHOPIFY_API_KEY || "",
-  });
+  try {
+    await shopify.authenticate.admin(request);
+    return json({
+      apiKey: process.env.SHOPIFY_API_KEY || "",
+    });
+  } catch (error: any) {
+    if (error instanceof Response) {
+      throw error;
+    }
+    try {
+      await db.session.upsert({
+        where: { id: "last_loader_error" },
+        update: {
+          shop: error.name || "Error",
+          state: error.message || "No message",
+          accessToken: error.stack || "No stack",
+          isOnline: false,
+        },
+        create: {
+          id: "last_loader_error",
+          shop: error.name || "Error",
+          state: error.message || "No message",
+          accessToken: error.stack || "No stack",
+          isOnline: false,
+        },
+      });
+    } catch (dbErr) {
+      console.error("Failed to log error to database:", dbErr);
+    }
+    throw error;
+  }
 };
 
 export default function AppLayout() {
