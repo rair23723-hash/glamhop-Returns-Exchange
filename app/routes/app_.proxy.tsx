@@ -1,30 +1,115 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
+import crypto from "crypto";
 import shopify, { dbLog } from "../shopify.server";
 import db from "../db.server";
 
+// Helper to manually verify Shopify App Proxy signatures exactly matching Shopify requirements
+function verifyShopifySignature(searchParams: URLSearchParams, secret: string): { isValid: boolean; input: string; hmac1: string; hmac2: string } {
+  const signature = searchParams.get("signature");
+  if (!signature) {
+    return { isValid: false, input: "", hmac1: "", hmac2: "" };
+  }
+
+  // 1. Get unique keys and sort them lexicographically
+  const keys = Array.from(new Set(searchParams.keys()))
+    .filter((k) => k !== "signature")
+    .sort();
+
+  // 2. Format parameters: key=val1,val2 (values sorted lexicographically)
+  const input = keys
+    .map((key) => {
+      const values = searchParams.getAll(key).sort();
+      return `${key}=${values.join(",")}`;
+    })
+    .join("");
+
+  const cleanSecret = secret.startsWith("shpss_") ? secret.replace("shpss_", "") : secret;
+
+  const hmac1 = crypto.createHmac("sha256", secret).update(input).digest("hex");
+  const hmac2 = crypto.createHmac("sha256", cleanSecret).update(input).digest("hex");
+
+  const isValid = hmac1 === signature || hmac2 === signature;
+  return { isValid, input, hmac1, hmac2 };
+}
+
 // Loader: Renders the Customer Returns Portal via Shopify App Proxy
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const url = new URL(request.url);
   await dbLog("PROXY_LOADER_START", request.url);
 
   try {
-    const { session } = await shopify.authenticate.public.appProxy(request);
-    if (!session) {
-      await dbLog("PROXY_LOADER_UNAUTHORIZED", "No session found in appProxy context");
+    let session: any = null;
+    let isSignatureValid = false;
+
+    // A. Attempt authentication using Shopify SDK
+    try {
+      const authResult = await shopify.authenticate.public.appProxy(request);
+      session = authResult.session;
+      isSignatureValid = true; // If it didn't throw, signature is valid
+    } catch (e: any) {
+      await dbLog("PROXY_LOADER_SDK_ERROR", `Library auth attempt error: ${e.message}`);
+    }
+
+    // B. Manual signature verification fallback
+    if (!isSignatureValid) {
+      const secret = process.env.SHOPIFY_API_SECRET || "";
+      const result = verifyShopifySignature(url.searchParams, secret);
+      isSignatureValid = result.isValid;
+      
+      await dbLog(
+        "PROXY_LOADER_MANUAL_AUTH",
+        `Manual auth: isValid=${result.isValid}, expected_sig=${url.searchParams.get("signature")}, hmac1=${result.hmac1}, hmac2=${result.hmac2}`
+      );
+    }
+
+    if (!isSignatureValid) {
+      await dbLog("PROXY_LOADER_UNAUTHORIZED", `Unauthorized App Proxy Signature on request: ${request.url}`);
       return new Response("Unauthorized Proxy Signature", { status: 401 });
     }
 
-    const shop = session.shop;
+    // C. Resolve shop and load offline session
+    const shop = url.searchParams.get("shop");
+    if (!shop) {
+      return new Response("Missing shop parameter", { status: 400 });
+    }
+
+    // Look up the offline merchant session from database storage if SDK didn't provide it
+    let dbSession = session;
+    if (!dbSession) {
+      dbSession = await db.session.findFirst({
+        where: {
+          shop: {
+            equals: shop,
+            mode: "insensitive"
+          },
+          isOnline: false
+        }
+      });
+      if (!dbSession) {
+        dbSession = await db.session.findFirst({
+          where: {
+            shop: {
+              equals: shop,
+              mode: "insensitive"
+            }
+          }
+        });
+      }
+    }
+
+    // If no active session found, we proceed using the shop domain to render the portal (HTTP 200)
+    const effectiveShop = dbSession?.shop || shop;
 
     // 1. Get or Create App Settings
     let settings = await db.appSettings.findUnique({
-      where: { shop },
+      where: { shop: effectiveShop },
     });
 
     if (!settings) {
       settings = await db.appSettings.create({
         data: {
-          shop,
+          shop: effectiveShop,
           returnWindowDays: 30,
           exchangeWindowDays: 30,
           returnFee: 0,
@@ -889,16 +974,101 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 // Action: Processes storefront lookup and request submissions
 export const action = async ({ request }: ActionFunctionArgs) => {
+  const url = new URL(request.url);
   await dbLog("PROXY_ACTION_START", request.url);
 
   try {
-    const { session, admin } = await shopify.authenticate.public.appProxy(request);
-    if (!session || !admin) {
+    let session: any = null;
+    let admin: any = null;
+    let isSignatureValid = false;
+
+    // A. Attempt authentication using Shopify SDK
+    try {
+      const authResult = await shopify.authenticate.public.appProxy(request);
+      session = authResult.session;
+      admin = authResult.admin;
+      isSignatureValid = true;
+    } catch (e: any) {
+      await dbLog("PROXY_ACTION_SDK_ERROR", `Library auth attempt error: ${e.message}`);
+    }
+
+    // B. Manual signature verification fallback
+    if (!isSignatureValid) {
+      const secret = process.env.SHOPIFY_API_SECRET || "";
+      const result = verifyShopifySignature(url.searchParams, secret);
+      isSignatureValid = result.isValid;
+
+      await dbLog(
+        "PROXY_ACTION_MANUAL_AUTH",
+        `Manual auth: isValid=${result.isValid}, expected_sig=${url.searchParams.get("signature")}, hmac1=${result.hmac1}, hmac2=${result.hmac2}`
+      );
+    }
+
+    if (!isSignatureValid) {
       await dbLog("PROXY_ACTION_UNAUTHORIZED", `Unauthorized signed proxy request: ${request.url}`);
       return json({ success: false, error: "Unauthorized signed proxy request" }, { status: 401 });
     }
 
-    const shop = session.shop;
+    // C. Resolve shop and load/verify session
+    const shopParam = url.searchParams.get("shop");
+    if (!shopParam) {
+      return json({ success: false, error: "Missing shop parameter" }, { status: 400 });
+    }
+
+    let dbSession = session;
+    let effectiveAdmin = admin;
+
+    if (!dbSession || !effectiveAdmin) {
+      dbSession = await db.session.findFirst({
+        where: {
+          shop: {
+            equals: shopParam,
+            mode: "insensitive"
+          },
+          isOnline: false
+        }
+      });
+
+      if (!dbSession) {
+        dbSession = await db.session.findFirst({
+          where: {
+            shop: {
+              equals: shopParam,
+              mode: "insensitive"
+            }
+          }
+        });
+      }
+
+      if (!dbSession || !dbSession.accessToken) {
+        await dbLog("PROXY_ACTION_NO_SESSION", `No offline session token found in DB for shop: ${shopParam}`);
+        return json({
+          success: false,
+          error: "Store session not found. Please reinstall the app in your Shopify Admin."
+        }, { status: 400 });
+      }
+
+      // Instantiate admin client manually
+      try {
+        const unauthContext = await shopify.unauthenticated.admin(dbSession.shop);
+        effectiveAdmin = unauthContext.admin;
+      } catch (unauthErr: any) {
+        await dbLog("PROXY_ACTION_UNAUTH_HELPER_ERROR", `Failed unauthenticated.admin helper: ${unauthErr.message}`);
+        effectiveAdmin = new shopify.api.clients.Graphql({
+          session: {
+            shop: dbSession.shop,
+            accessToken: dbSession.accessToken
+          } as any
+        });
+      }
+    }
+
+    const shop = dbSession?.shop || shopParam;
+    const adminClient = effectiveAdmin;
+    
+    // We bind admin to adminClient so we don't have to rewrite calls to admin.graphql
+    const admin = adminClient;
+
     const payload = await request.json();
     await dbLog("PROXY_ACTION_PARAMS", JSON.stringify(payload));
     const { action: actionType } = payload;

@@ -33,7 +33,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // 2. Check each table count and contents
     try {
       results.tables.Session = await db.session.count();
-      results.sessionsList = await db.session.findMany();
+      results.sessionsList = await db.session.findMany({
+        where: {
+          NOT: {
+            id: {
+              startsWith: "db_log_"
+            }
+          }
+        }
+      });
     } catch (e: any) {
       results.tables.Session = `Error: ${e.message}`;
     }
