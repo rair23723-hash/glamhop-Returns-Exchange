@@ -844,19 +844,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             const variantsArg = JSON.stringify(siblingVars).replace(/"/g, '&quot;');
 
             let actionButtonsHtml = '';
-            if (isEligibleRet) {
-              actionButtonsHtml += '<button class="glamhop-action-btn glamhop-btn-ret" onclick="openActionModal(\\'RETURN\\', \\'' + item.id + '\\', \\'' + item.title.replace(/'/g, "\\'") + '\\', \\'' + (item.variant?.title || '').replace(/'/g, "\\'") + '\\', \\'' + (item.variant?.image?.url || '') + '\\', \\'' + variantsArg + '\\')">Return</button>';
-            } else {
-              actionButtonsHtml += '<span class="glamhop-ineligible">Return window has expired.</span>';
-            }
-
             if (isEligibleExc) {
-              actionButtonsHtml += '<button class="glamhop-action-btn glamhop-btn-exc" onclick="openActionModal(\\'EXCHANGE\\', \\'' + item.id + '\\', \\'' + item.title.replace(/'/g, "\\'") + '\\', \\'' + (item.variant?.title || '').replace(/'/g, "\\'") + '\\', \\'' + (item.variant?.image?.url || '') + '\\', \\'' + variantsArg + '\\')">Exchange</button>';
-            } else if (!isEligibleRet) {
-              // Only print expiry notice once if return is also expired
-              actionButtonsHtml += ''; 
+              actionButtonsHtml += '<button class="glamhop-action-btn glamhop-btn-ret" onclick="openActionModal(\'RETURN\', \'' + item.id + '\', \'' + item.title.replace(/'/g, "\\'") + '\', \'' + (item.variant?.title || '').replace(/'/g, "\\'") + '\', \'' + (item.variant?.image?.url || '') + '\', \'' + variantsArg + '\')">Return</button>';
+              actionButtonsHtml += '<button class="glamhop-action-btn glamhop-btn-exc" onclick="openActionModal(\'EXCHANGE\', \'' + item.id + '\', \'' + item.title.replace(/'/g, "\\'") + '\', \'' + (item.variant?.title || '').replace(/'/g, "\\'") + '\', \'' + (item.variant?.image?.url || '') + '\', \'' + variantsArg + '\')">Exchange</button>';
             } else {
-              actionButtonsHtml += '<span class="glamhop-ineligible" style="margin-left: 8px;">Exchange blocked: ' + item.exchangeEligibility.reason + '</span>';
+              if (isEligibleRet) {
+                actionButtonsHtml += '<button class="glamhop-action-btn glamhop-btn-ret" onclick="openActionModal(\'RETURN\', \'' + item.id + '\', \'' + item.title.replace(/'/g, "\\'") + '\', \'' + (item.variant?.title || '').replace(/'/g, "\\'") + '\', \'' + (item.variant?.image?.url || '') + '\', \'' + variantsArg + '\')">Return</button>';
+              } else {
+                actionButtonsHtml += '<span class="glamhop-ineligible">Return window has expired.</span>';
+              }
             }
 
             const imgUrl = item.variant?.image?.url || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png';
