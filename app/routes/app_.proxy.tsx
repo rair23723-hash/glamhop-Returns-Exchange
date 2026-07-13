@@ -46,7 +46,7 @@ async function ensureOfflineSessionExists(shop: string) {
     return dbSession;
   }
 
-  const envSecret = process.env.SHOPIFY_API_SECRET || "";
+  const envSecret = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN || process.env.SHOPIFY_API_SECRET || "";
   const envScopes = process.env.SCOPES || "write_orders,read_orders,read_customers";
 
   if (!dbSession) {
@@ -65,6 +65,19 @@ async function ensureOfflineSessionExists(shop: string) {
       await dbLog("PROXY_SESSION_AUTO_CREATE_SUCCESS", `Created session for shop: ${shop}`);
     } catch (createErr: any) {
       await dbLog("PROXY_SESSION_AUTO_CREATE_ERROR", `Failed to create session for shop: ${shop} - ${createErr.message}`);
+    }
+  } else if (!dbSession.accessToken.startsWith("shpat_") && envSecret.startsWith("shpat_")) {
+    await dbLog("PROXY_SESSION_AUTO_UPDATE_TOKEN", `Updating offline session with env token for shop: ${shop}`);
+    try {
+      dbSession = await db.session.update({
+        where: { id: sessionId },
+        data: {
+          accessToken: envSecret
+        }
+      });
+      await dbLog("PROXY_SESSION_AUTO_UPDATE_SUCCESS", `Updated token for shop: ${shop}`);
+    } catch (updateErr: any) {
+      await dbLog("PROXY_SESSION_AUTO_UPDATE_ERROR", `Failed to update token: ${updateErr.message}`);
     }
   }
 
