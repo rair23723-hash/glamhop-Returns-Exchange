@@ -24,7 +24,7 @@ if (-not $appUrl) {
     $appUrl = Read-Host "Enter SHOPIFY_APP_URL (e.g. https://glamhop-returns-exchange.vercel.app)"
 }
 
-$scopes = "write_orders,read_orders,read_customers"
+$scopes = "write_orders,read_orders,read_customers,read_products"
 
 $dbUrl = $env:DATABASE_URL
 if (-not $dbUrl) {
