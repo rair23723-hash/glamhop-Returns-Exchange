@@ -16,6 +16,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     SCOPES: process.env.SCOPES || "NOT SET",
     DATABASE_URL: mask(process.env.DATABASE_URL),
     DIRECT_URL: mask(process.env.DIRECT_URL),
+    allEnvKeys: Object.keys(process.env)
   };
 
   const results: any = {
