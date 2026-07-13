@@ -24,14 +24,20 @@ export const dbLog = async (stage: string, message: string) => {
   }
 };
 
-let baseSessionStorage: PrismaSessionStorage | null = null;
+const baseSessionStorage = new PrismaSessionStorage(prisma);
 
-const getSessionStorage = () => {
-  if (!baseSessionStorage) {
-    baseSessionStorage = new PrismaSessionStorage(prisma);
-  }
-  return baseSessionStorage;
-};
+// Overwrite the ready promise to use a lazy-resolved connection checker
+let isDbReady = false;
+Object.defineProperty(baseSessionStorage, "ready", {
+  get: () => {
+    if (isDbReady) return Promise.resolve(true);
+    return prisma.session.count().then(() => {
+      isDbReady = true;
+      return true;
+    });
+  },
+  configurable: true,
+});
 
 const loggingSessionStorage = {
   storeSession: async (session: any) => {
@@ -43,65 +49,60 @@ const loggingSessionStorage = {
     });
     await dbLog("STORE_SESSION_START", details);
     try {
-      const storage = getSessionStorage();
-      const result = await storage.storeSession(session);
+      const result = await baseSessionStorage.storeSession(session);
       await dbLog("STORE_SESSION_SUCCESS", `Result: ${result}`);
       return result;
     } catch (error: any) {
       await dbLog("STORE_SESSION_ERROR", `${error.message}\n${error.stack}`);
-      baseSessionStorage = null;
+      isDbReady = false; // Reset to retry on next hit
       throw error;
     }
   },
   loadSession: async (id: string) => {
     await dbLog("LOAD_SESSION_START", `id: ${id}`);
     try {
-      const storage = getSessionStorage();
-      const result = await storage.loadSession(id);
+      const result = await baseSessionStorage.loadSession(id);
       await dbLog("LOAD_SESSION_SUCCESS", `found: ${!!result}`);
       return result;
     } catch (error: any) {
       await dbLog("LOAD_SESSION_ERROR", `${error.message}\n${error.stack}`);
-      baseSessionStorage = null;
+      isDbReady = false;
       throw error;
     }
   },
   deleteSession: async (id: string) => {
     await dbLog("DELETE_SESSION_START", `id: ${id}`);
     try {
-      const storage = getSessionStorage();
-      const result = await storage.deleteSession(id);
+      const result = await baseSessionStorage.deleteSession(id);
       await dbLog("DELETE_SESSION_SUCCESS", `Result: ${result}`);
       return result;
     } catch (error: any) {
       await dbLog("DELETE_SESSION_ERROR", `${error.message}\n${error.stack}`);
-      baseSessionStorage = null;
+      isDbReady = false;
       throw error;
     }
   },
   deleteSessions: async (ids: string[]) => {
     await dbLog("DELETE_SESSIONS_START", `ids: ${ids.join(",")}`);
     try {
-      const storage = getSessionStorage();
-      const result = await storage.deleteSessions(ids);
+      const result = await baseSessionStorage.deleteSessions(ids);
       await dbLog("DELETE_SESSIONS_SUCCESS", `Result: ${result}`);
       return result;
     } catch (error: any) {
       await dbLog("DELETE_SESSIONS_ERROR", `${error.message}\n${error.stack}`);
-      baseSessionStorage = null;
+      isDbReady = false;
       throw error;
     }
   },
   findSessionsByShop: async (shop: string) => {
     await dbLog("FIND_SESSIONS_START", `shop: ${shop}`);
     try {
-      const storage = getSessionStorage();
-      const result = await storage.findSessionsByShop(shop);
+      const result = await baseSessionStorage.findSessionsByShop(shop);
       await dbLog("FIND_SESSIONS_SUCCESS", `count: ${result?.length}`);
       return result;
     } catch (error: any) {
       await dbLog("FIND_SESSIONS_ERROR", `${error.message}\n${error.stack}`);
-      baseSessionStorage = null;
+      isDbReady = false;
       throw error;
     }
   },
@@ -114,7 +115,7 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL!,
   authPathPrefix: "/auth",
-  sessionStorage: loggingSessionStorage,
+  sessionStorage: loggingSessionStorage as any,
   // Private custom app — SingleMerchant, not AppStore
   distribution: AppDistribution.SingleMerchant,
   webhooks: {

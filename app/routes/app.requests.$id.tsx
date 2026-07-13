@@ -120,9 +120,8 @@ async function createExchangeDraftOrder(
   }
 }
 
-// Loader: Fetches the request details and timeline events
 export const loader = async ({ params, request }: LoaderFunctionArgs) => {
-  const { session } = await shopify.authenticate.admin(request);
+  const { session, admin } = await shopify.authenticate.admin(request);
   const shop = session.shop;
   const id = params.id;
 
@@ -147,8 +146,29 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
     throw new Response("Not Found", { status: 404 });
   }
 
-  return json({ returnRequest });
+  let phone = "N/A";
+  try {
+    const orderResponse = await admin.graphql(
+      `#graphql
+      query getOrderPhone($id: ID!) {
+        order(id: $id) {
+          phone
+          customer {
+            phone
+          }
+        }
+      }`,
+      { variables: { id: returnRequest.orderId } }
+    );
+    const orderData = await orderResponse.json();
+    phone = orderData.data?.order?.phone || orderData.data?.order?.customer?.phone || "N/A";
+  } catch (err: any) {
+    console.error("Failed to fetch phone number from Shopify:", err.message);
+  }
+
+  return json({ returnRequest, phone });
 };
+
 
 // Action: Processes request workflows and notifications
 export const action = async ({ request, params }: ActionFunctionArgs) => {
@@ -228,6 +248,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       "GlamHop-Approved",
       `[GlamHop] Request ${requestId} approved. ${draftOrderName ? `Draft Order: ${draftOrderName}` : ""}`
     );
+
+    await db.adminNote.create({
+      data: {
+        returnRequestId: id!,
+        note: `Approved: ${approveDesc}`,
+        author: "System / Admin",
+      },
+    });
   } else if (actionType === "reject") {
     const rejectionReason = formData.get("rejectionReason") as string;
     if (!rejectionReason) {
@@ -266,6 +294,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       "GlamHop-Rejected",
       `[GlamHop] Request ${requestId} rejected. Reason: ${rejectionReason}`
     );
+
+    await db.adminNote.create({
+      data: {
+        returnRequestId: id!,
+        note: `Rejected: Rejection Reason: ${rejectionReason}`,
+        author: "System / Admin",
+      },
+    });
   } else if (actionType === "request_info") {
     await db.$transaction([
       db.returnRequest.update({
@@ -412,6 +448,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       "GlamHop-Refunded",
       `[GlamHop] Refund processed for request ${requestId}.`
     );
+
+    await db.adminNote.create({
+      data: {
+        returnRequestId: id!,
+        note: "Refund Processed: Quality check passed. Refund has been processed to payment gateway.",
+        author: "System / Admin",
+      },
+    });
   } else if (actionType === "replacement_dispatched") {
     await db.$transaction([
       db.returnRequest.update({
@@ -442,6 +486,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       "GlamHop-Exchange-Dispatched",
       `[GlamHop] Replacement item dispatched for request ${requestId}.`
     );
+
+    await db.adminNote.create({
+      data: {
+        returnRequestId: id!,
+        note: "Replacement Dispatched: Exchange replacement item packed and handed to courier.",
+        author: "System / Admin",
+      },
+    });
   } else if (actionType === "replacement_delivered") {
     await db.$transaction([
       db.returnRequest.update({
@@ -463,13 +515,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function RequestDetailsPage() {
-  const { returnRequest } = useLoaderData<typeof loader>();
+  const { returnRequest, phone } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
   const [rejectionInput, setRejectionInput] = useState("");
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [newNote, setNewNote] = useState("");
+  const [activePreviewImage, setActivePreviewImage] = useState<string | null>(null);
 
   const items = returnRequest.items || [];
   const notes = returnRequest.notes || [];
@@ -555,7 +608,7 @@ export default function RequestDetailsPage() {
                                   border: "1px solid #eeeeee",
                                   cursor: "pointer",
                                 }}
-                                onClick={() => window.open(img.url, "_blank")}
+                                onClick={() => setActivePreviewImage(img.url)}
                               >
                                 <img
                                   src={img.url}
@@ -863,6 +916,9 @@ export default function RequestDetailsPage() {
                   <Text as="p">
                     <strong>Email:</strong> {returnRequest.customerEmail || "N/A"}
                   </Text>
+                  <Text as="p">
+                    <strong>Phone:</strong> {phone || "N/A"}
+                  </Text>
                   <Text as="p" tone="subdued" variant="bodySm">
                     ID: {returnRequest.customerId}
                   </Text>
@@ -889,6 +945,35 @@ export default function RequestDetailsPage() {
           </BlockStack>
         </Layout.Section>
       </Layout>
+      {activePreviewImage && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            backgroundColor: "rgba(0,0,0,0.85)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            cursor: "zoom-out",
+          }}
+          onClick={() => setActivePreviewImage(null)}
+        >
+          <img
+            src={activePreviewImage}
+            alt="Full size attachment preview"
+            style={{
+              maxWidth: "90%",
+              maxHeight: "90%",
+              borderRadius: "8px",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+            }}
+          />
+        </div>
+      )}
     </Page>
   );
 }

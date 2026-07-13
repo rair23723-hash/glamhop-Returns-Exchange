@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
-import { useLoaderData, Link } from "@remix-run/react";
+import { useLoaderData, Link, useNavigate } from "@remix-run/react";
 import {
   Page,
   Layout,
@@ -80,6 +80,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export default function Index() {
   const { kpis, recentRequests } = useLoaderData<typeof loader>();
+  const navigate = useNavigate();
 
   const resourceName = {
     singular: "return request",
@@ -95,7 +96,12 @@ export default function Index() {
       const reasonSummary = items.map((i) => i.reason).join(", ");
 
       return (
-        <IndexTable.Row id={id} key={id} position={index}>
+        <IndexTable.Row
+          id={id}
+          key={id}
+          position={index}
+          onClick={() => navigate(`/app/requests/${id}`)}
+        >
           <IndexTable.Cell>
             <Link
               to={`/app/requests/${id}`}
