@@ -1461,6 +1461,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   } catch (error: any) {
     console.error("CRITICAL ERROR IN PROXY ACTION:", error);
     await dbLog("PROXY_ACTION_ERROR", `${error.message}\n${error.stack}`);
-    return json({ success: false, error: error.message || "An unexpected error occurred" }, { status: 500 });
+    return json({
+      success: false,
+      error: error.message || "An unexpected error occurred",
+      message: error.message || "An unexpected error occurred"
+    }, { status: 200 }); // Return HTTP 200 so Shopify App Proxy doesn't intercept with an HTML page
   }
 };
