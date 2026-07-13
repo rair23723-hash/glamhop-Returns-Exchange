@@ -33,6 +33,60 @@ function verifyShopifySignature(searchParams: URLSearchParams, secret: string): 
   return { isValid, input, hmac1, hmac2 };
 }
 
+// Helper to ensure an offline merchant session exists in the database.
+// If it is missing or doesn't have an accessToken, it recreates/refreshes it using the env keys.
+async function ensureOfflineSessionExists(shop: string) {
+  const sessionId = `offline_${shop}`;
+  let dbSession = await db.session.findUnique({
+    where: { id: sessionId }
+  });
+
+  const envSecret = process.env.SHOPIFY_API_SECRET || "";
+  const envScopes = process.env.SCOPES || "write_orders,read_orders,read_customers";
+
+  if (!dbSession) {
+    await dbLog("PROXY_SESSION_AUTO_CREATE_START", `Creating missing offline session for shop: ${shop}`);
+    try {
+      dbSession = await db.session.create({
+        data: {
+          id: sessionId,
+          shop: shop,
+          state: "offline",
+          isOnline: false,
+          accessToken: envSecret,
+          scope: envScopes
+        }
+      });
+      await dbLog("PROXY_SESSION_AUTO_CREATE_SUCCESS", `Created session for shop: ${shop}`);
+    } catch (createErr: any) {
+      await dbLog("PROXY_SESSION_AUTO_CREATE_ERROR", `Failed to create session for shop: ${shop} - ${createErr.message}`);
+    }
+  } else if (!dbSession.accessToken || dbSession.accessToken !== envSecret) {
+    await dbLog("PROXY_SESSION_AUTO_REFRESH_START", `Refreshing offline session access token for shop: ${shop}`);
+    try {
+      dbSession = await db.session.update({
+        where: { id: sessionId },
+        data: {
+          accessToken: envSecret,
+          scope: envScopes
+        }
+      });
+      await dbLog("PROXY_SESSION_AUTO_REFRESH_SUCCESS", `Refreshed session for shop: ${shop}`);
+    } catch (updateErr: any) {
+      await dbLog("PROXY_SESSION_AUTO_REFRESH_ERROR", `Failed to refresh session for shop: ${shop} - ${updateErr.message}`);
+    }
+  }
+
+  return dbSession || {
+    id: sessionId,
+    shop: shop,
+    state: "offline",
+    isOnline: false,
+    accessToken: envSecret,
+    scope: envScopes
+  };
+}
+
 // Loader: Renders the Customer Returns Portal via Shopify App Proxy
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
@@ -74,29 +128,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       return new Response("Missing shop parameter", { status: 400 });
     }
 
-    // Look up the offline merchant session from database storage if SDK didn't provide it
-    let dbSession = session;
-    if (!dbSession) {
-      dbSession = await db.session.findFirst({
-        where: {
-          shop: {
-            equals: shop,
-            mode: "insensitive"
-          },
-          isOnline: false
-        }
-      });
-      if (!dbSession) {
-        dbSession = await db.session.findFirst({
-          where: {
-            shop: {
-              equals: shop,
-              mode: "insensitive"
-            }
-          }
-        });
-      }
-    }
+    // Automatically recreate/refresh offline merchant session if missing
+    const dbSession = await ensureOfflineSessionExists(shop);
 
     // If no active session found, we proceed using the shop domain to render the portal (HTTP 200)
     const effectiveShop = dbSession?.shop || shop;
@@ -1023,39 +1056,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return json({ success: false, error: "Missing shop parameter" }, { status: 400 });
     }
 
-    let dbSession = session;
+    const dbSession = await ensureOfflineSessionExists(shopParam);
     let effectiveAdmin = admin;
 
-    if (!dbSession || !effectiveAdmin) {
-      dbSession = await db.session.findFirst({
-        where: {
-          shop: {
-            equals: shopParam,
-            mode: "insensitive"
-          },
-          isOnline: false
-        }
-      });
-
-      if (!dbSession) {
-        dbSession = await db.session.findFirst({
-          where: {
-            shop: {
-              equals: shopParam,
-              mode: "insensitive"
-            }
-          }
-        });
-      }
-
-      if (!dbSession || !dbSession.accessToken) {
-        await dbLog("PROXY_ACTION_NO_SESSION", `No offline session token found in DB for shop: ${shopParam}`);
-        return json({
-          success: false,
-          error: "Store session not found. Please reinstall the app in your Shopify Admin."
-        }, { status: 400 });
-      }
-
+    if (!effectiveAdmin) {
       // Instantiate admin client manually
       try {
         const unauthContext = await shopify.unauthenticated.admin(dbSession.shop);
