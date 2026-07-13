@@ -1064,10 +1064,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     const shop = dbSession?.shop || shopParam;
-    const adminClient = effectiveAdmin;
     
-    // We bind admin to adminClient so we don't have to rewrite calls to admin.graphql
-    const admin = adminClient;
+    // Assign effectiveAdmin to the pre-declared admin variable (declared as let admin at the top of action)
+    admin = effectiveAdmin;
 
     const payload = await request.json();
     await dbLog("PROXY_ACTION_PARAMS", JSON.stringify(payload));
