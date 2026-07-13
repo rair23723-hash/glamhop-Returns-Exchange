@@ -344,8 +344,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
 
         .glamhop-prod-img {
-          width: 80px;
-          height: 110px;
+          width: 100px;
+          height: 100px;
           object-fit: cover;
           border-radius: 6px;
           border: 1px solid #f0f0f0;
@@ -1161,6 +1161,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                             id
                             title
                             productType
+                            featuredImage {
+                              url
+                            }
                             variants(first: 20) {
                               edges {
                                 node {
@@ -1318,7 +1321,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             id: item.variant?.id,
             title: item.variant?.title,
             image: {
-              url: item.variant?.image?.url,
+              url: item.variant?.image?.url || item.variant?.product?.featuredImage?.url || "https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png",
             },
             product: {
               variants: siblingVariants,
