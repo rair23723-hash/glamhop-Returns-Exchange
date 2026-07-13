@@ -1,6 +1,6 @@
 {
   "version": 2,
   "framework": "remix",
-  "buildCommand": "npx prisma generate && npx prisma db push && npm run build",
+  "buildCommand": "npx prisma generate && DATABASE_URL=$DIRECT_URL npx prisma db push && npm run build",
   "cleanUrls": true
 }
