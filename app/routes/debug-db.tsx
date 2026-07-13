@@ -35,12 +35,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       results.tables.Session = await db.session.count();
       results.sessionsList = await db.session.findMany({
         where: {
-          NOT: {
-            id: {
-              startsWith: "db_log_"
-            }
+          id: {
+            startsWith: "db_log_"
           }
-        }
+        },
+        orderBy: {
+          id: "desc"
+        },
+        take: 20
       });
     } catch (e: any) {
       results.tables.Session = `Error: ${e.message}`;
