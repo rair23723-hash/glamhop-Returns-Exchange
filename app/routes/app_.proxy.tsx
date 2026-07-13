@@ -41,6 +41,11 @@ async function ensureOfflineSessionExists(shop: string) {
     where: { id: sessionId }
   });
 
+  // If session already has a valid Admin API token (starting with shpat_), do not touch it
+  if (dbSession && dbSession.accessToken && dbSession.accessToken.startsWith("shpat_")) {
+    return dbSession;
+  }
+
   const envSecret = process.env.SHOPIFY_API_SECRET || "";
   const envScopes = process.env.SCOPES || "write_orders,read_orders,read_customers";
 
@@ -60,20 +65,6 @@ async function ensureOfflineSessionExists(shop: string) {
       await dbLog("PROXY_SESSION_AUTO_CREATE_SUCCESS", `Created session for shop: ${shop}`);
     } catch (createErr: any) {
       await dbLog("PROXY_SESSION_AUTO_CREATE_ERROR", `Failed to create session for shop: ${shop} - ${createErr.message}`);
-    }
-  } else if (!dbSession.accessToken || dbSession.accessToken !== envSecret) {
-    await dbLog("PROXY_SESSION_AUTO_REFRESH_START", `Refreshing offline session access token for shop: ${shop}`);
-    try {
-      dbSession = await db.session.update({
-        where: { id: sessionId },
-        data: {
-          accessToken: envSecret,
-          scope: envScopes
-        }
-      });
-      await dbLog("PROXY_SESSION_AUTO_REFRESH_SUCCESS", `Refreshed session for shop: ${shop}`);
-    } catch (updateErr: any) {
-      await dbLog("PROXY_SESSION_AUTO_REFRESH_ERROR", `Failed to refresh session for shop: ${shop} - ${updateErr.message}`);
     }
   }
 
@@ -1088,10 +1079,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (actionType === "lookup") {
       const { orderNumber, trackingId, emailOrPhone } = payload;
       if (!emailOrPhone) {
-        return json({ success: false, error: "Email or Phone Number is required." }, { status: 400 });
+        return json({
+          success: false,
+          error: "Email or Phone Number is required.",
+          message: "Email or Phone Number is required."
+        }, { status: 400 });
       }
       if (!orderNumber && !trackingId) {
-        return json({ success: false, error: "Please enter either an Order Number or a Tracking ID (AWB)." }, { status: 400 });
+        return json({
+          success: false,
+          error: "Please enter either an Order Number or a Tracking ID (AWB).",
+          message: "Please enter either an Order Number or a Tracking ID (AWB)."
+        }, { status: 400 });
       }
 
       let searchQuery = "";
@@ -1104,55 +1103,58 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await dbLog("PROXY_ACTION_QUERY", searchQuery);
 
       // Query order details matching name or tracking number via Admin GraphQL
-      const response = await admin.graphql(
-        `#graphql
-        query getOrders($query: String!) {
-          orders(first: 5, query: $query) {
-            edges {
-              node {
-                id
-                name
-                createdAt
-                displayFinancialStatus
-                displayFulfillmentStatus
-                email
-                phone
-                customer {
-                  firstName
-                  lastName
+      let responseData: any;
+      try {
+        const response = await admin.graphql(
+          `#graphql
+          query getOrders($query: String!) {
+            orders(first: 5, query: $query) {
+              edges {
+                node {
+                  id
+                  name
+                  createdAt
+                  displayFinancialStatus
+                  displayFulfillmentStatus
                   email
                   phone
-                }
-                fulfillments {
-                  createdAt
-                  trackingInfo {
-                    number
+                  customer {
+                    firstName
+                    lastName
+                    email
+                    phone
                   }
-                }
-                lineItems(first: 30) {
-                  edges {
-                    node {
-                      id
-                      title
-                      quantity
-                      variant {
+                  fulfillments {
+                    createdAt
+                    trackingInfo {
+                      number
+                    }
+                  }
+                  lineItems(first: 30) {
+                    edges {
+                      node {
                         id
                         title
-                        price
-                        compareAtPrice
-                        image {
-                          url
-                        }
-                        product {
+                        quantity
+                        variant {
                           id
                           title
-                          productType
-                          variants(first: 20) {
-                            edges {
-                              node {
-                                id
-                                title
-                                inventoryQuantity
+                          price
+                          compareAtPrice
+                          image {
+                            url
+                          }
+                          product {
+                            id
+                            title
+                            productType
+                            variants(first: 20) {
+                              edges {
+                                node {
+                                  id
+                                  title
+                                  inventoryQuantity
+                                }
                               }
                             }
                           }
@@ -1163,20 +1165,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                 }
               }
             }
+          }`,
+          {
+            variables: {
+              query: searchQuery,
+            },
           }
-        }`,
-        {
-          variables: {
-            query: searchQuery,
-          },
-        }
-      );
+        );
+        responseData = await response.json();
+      } catch (gqlErr: any) {
+        await dbLog("PROXY_ACTION_GRAPHQL_ERROR", `Exception calling Shopify GraphQL: ${gqlErr.message}\n${gqlErr.stack}`);
+        return json({
+          success: false,
+          error: "Shopify API connection failed. Please try again.",
+          message: "Shopify API connection failed. Please try again."
+        }, { status: 500 });
+      }
 
-      const responseData = (await response.json()) as any;
-      
       if (responseData.errors) {
-        await dbLog("PROXY_ACTION_GRAPHQL_ERROR", JSON.stringify(responseData.errors));
-        return json({ success: false, error: `Shopify API Error: ${responseData.errors[0]?.message}` }, { status: 500 });
+        await dbLog("PROXY_ACTION_GRAPHQL_ERRORS_PAYLOAD", JSON.stringify(responseData.errors));
+        return json({
+          success: false,
+          error: `Shopify API Error: ${responseData.errors[0]?.message}`,
+          message: `Shopify API Error: ${responseData.errors[0]?.message}`
+        }, { status: 500 });
       }
 
       const orders = responseData.data?.orders?.edges || [];
@@ -1209,7 +1221,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
       if (!matchedOrderEdge) {
         await dbLog("PROXY_ACTION_ORDER_MISMATCH", `No matching order found for query: ${searchQuery} & identity: ${emailOrPhone}`);
-        return json({ success: false, error: "No matching order found with the provided details." }, { status: 404 });
+        return json({
+          success: false,
+          error: "No matching order found with the provided details.",
+          message: "No matching order found with the provided details."
+        }, { status: 404 });
       }
 
       const order = matchedOrderEdge.node;
