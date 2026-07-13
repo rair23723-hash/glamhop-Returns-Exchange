@@ -55,40 +55,42 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     whereClause.type = type;
   }
 
-  const totalCount = await db.returnRequest.count({ where: whereClause });
-
-  const requests = await db.returnRequest.findMany({
-    where: whereClause,
-    include: { items: true },
-    orderBy: { [sortBy]: sortDir },
-    skip: (page - 1) * limit,
-    take: limit,
-  });
-
-  // Analytics widget totals (general counters)
-  const total = await db.returnRequest.count({ where: { shop } });
-  const pending = await db.returnRequest.count({ where: { shop, status: "PENDING" } });
-  const approved = await db.returnRequest.count({ where: { shop, status: "APPROVED" } });
-  const rejected = await db.returnRequest.count({ where: { shop, status: "REJECTED" } });
-  const refunded = await db.returnRequest.count({
-    where: { shop, type: "RETURN", status: "COMPLETED" },
-  });
-  const exchanged = await db.returnRequest.count({
-    where: { shop, type: "EXCHANGE", status: "COMPLETED" },
-  });
-
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
-  const todayReturns = await db.returnRequest.count({
-    where: { shop, createdAt: { gte: startOfToday } },
-  });
 
   const startOfMonth = new Date();
   startOfMonth.setDate(1);
   startOfMonth.setHours(0, 0, 0, 0);
-  const monthlyReturns = await db.returnRequest.count({
-    where: { shop, createdAt: { gte: startOfMonth } },
-  });
+
+  const [
+    totalCount,
+    requests,
+    total,
+    pending,
+    approved,
+    rejected,
+    refunded,
+    exchanged,
+    todayReturns,
+    monthlyReturns
+  ] = await Promise.all([
+    db.returnRequest.count({ where: whereClause }),
+    db.returnRequest.findMany({
+      where: whereClause,
+      include: { items: true },
+      orderBy: { [sortBy]: sortDir },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    db.returnRequest.count({ where: { shop } }),
+    db.returnRequest.count({ where: { shop, status: "PENDING" } }),
+    db.returnRequest.count({ where: { shop, status: "APPROVED" } }),
+    db.returnRequest.count({ where: { shop, status: "REJECTED" } }),
+    db.returnRequest.count({ where: { shop, type: "RETURN", status: "COMPLETED" } }),
+    db.returnRequest.count({ where: { shop, type: "EXCHANGE", status: "COMPLETED" } }),
+    db.returnRequest.count({ where: { shop, createdAt: { gte: startOfToday } } }),
+    db.returnRequest.count({ where: { shop, createdAt: { gte: startOfMonth } } }),
+  ]);
 
   return json({
     kpis: {

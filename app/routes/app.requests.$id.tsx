@@ -149,30 +149,12 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
     throw new Response("Not Found", { status: 404 });
   }
 
-  // 1. Log "Admin Viewed Request" if not logged already (First-time view check)
-  const viewedEvent = await db.timelineEvent.findFirst({
-    where: { returnRequestId: id, status: "ADMIN_VIEWED" }
-  });
-  if (!viewedEvent) {
-    await db.timelineEvent.create({
-      data: {
-        returnRequestId: id!,
-        status: "ADMIN_VIEWED",
-        title: "Admin Viewed Request",
-        description: "Admin viewed the request details for the first time.",
-      }
-    });
-    // Refresh timeline list
-    returnRequest.timeline = await db.timelineEvent.findMany({
-      where: { returnRequestId: id },
-      orderBy: { createdAt: "desc" },
-    });
-  }
-
-  // 2. Fetch full order metadata from Shopify GraphQL
+  // 1. Fetch full order metadata from Shopify GraphQL & check view status in parallel
   let shopifyOrderDetails = null;
+  let viewedEvent = null;
+
   try {
-    const orderResponse = await admin.graphql(
+    const shopifyPromise = admin.graphql(
       `#graphql
       query getOrderDetails($id: ID!) {
         order(id: $id) {
@@ -212,11 +194,36 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
         }
       }`,
       { variables: { id: returnRequest.orderId } }
-    );
-    const orderData = await orderResponse.json();
-    shopifyOrderDetails = orderData.data?.order || null;
+    ).then((res: any) => res.json()).then((data: any) => data.data?.order || null).catch((err: any) => {
+      console.error("Failed to fetch order details from Shopify:", err.message);
+      return null;
+    });
+
+    const dbPromise = db.timelineEvent.findFirst({
+      where: { returnRequestId: id, status: "ADMIN_VIEWED" }
+    });
+
+    const [orderInfo, eventInfo] = await Promise.all([shopifyPromise, dbPromise]);
+    shopifyOrderDetails = orderInfo;
+    viewedEvent = eventInfo;
   } catch (err: any) {
-    console.error("Failed to fetch order details from Shopify:", err.message);
+    console.error("Error during parallel loader fetches:", err.message);
+  }
+
+  if (!viewedEvent) {
+    await db.timelineEvent.create({
+      data: {
+        returnRequestId: id!,
+        status: "ADMIN_VIEWED",
+        title: "Admin Viewed Request",
+        description: "Admin viewed the request details for the first time.",
+      }
+    });
+    // Refresh timeline list
+    returnRequest.timeline = await db.timelineEvent.findMany({
+      where: { returnRequestId: id },
+      orderBy: { createdAt: "desc" },
+    });
   }
 
   return json({ returnRequest, shopifyOrderDetails });

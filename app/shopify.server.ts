@@ -9,8 +9,10 @@ import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prism
 import prisma from "./db.server";
 
 export const dbLog = async (stage: string, message: string) => {
-  try {
-    await prisma.session.create({
+  console.log(`[GLAMHOP_LOG] [${stage}]: ${message}`);
+
+  if (stage.includes("ERROR") || stage.includes("CRITICAL") || stage.includes("FAIL")) {
+    prisma.session.create({
       data: {
         id: `db_log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         shop: "glamhop-logs.myshopify.com",
@@ -18,9 +20,9 @@ export const dbLog = async (stage: string, message: string) => {
         accessToken: message,
         isOnline: false,
       },
+    }).catch((e: any) => {
+      console.error("Failed to write db error log:", e.message);
     });
-  } catch (e: any) {
-    console.error("Failed to write db log:", e.message);
   }
 };
 
@@ -115,7 +117,7 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL!,
   authPathPrefix: "/auth",
-  sessionStorage: loggingSessionStorage as any,
+  sessionStorage: baseSessionStorage,
   // Private custom app — SingleMerchant, not AppStore
   distribution: AppDistribution.SingleMerchant,
   webhooks: {
