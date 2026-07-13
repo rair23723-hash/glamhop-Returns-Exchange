@@ -12,6 +12,7 @@ import {
   BlockStack,
   Text,
   Banner,
+  Divider,
 } from "@shopify/polaris";
 import { useState, useEffect } from "react";
 import shopify from "../shopify.server";

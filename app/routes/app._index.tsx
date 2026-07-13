@@ -101,6 +101,7 @@ export default function Index() {
           key={id}
           position={index}
           onClick={() => navigate(`/app/requests/${id}`)}
+          style={{ cursor: "pointer" }}
         >
           <IndexTable.Cell>
             <Link
