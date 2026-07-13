@@ -153,6 +153,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           transition: max-width 0.3s ease;
         }
 
+        .glamhop-view {
+          display: none;
+        }
+
+        .glamhop-view.active {
+          display: block;
+        }
+
         .glamhop-portal.wide {
           max-width: 750px;
         }
