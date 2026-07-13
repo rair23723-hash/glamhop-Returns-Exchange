@@ -425,7 +425,9 @@ export default function Index() {
                       {rowMarkup}
                     </IndexTable>
                     {pagination.totalPages > 1 && (
-                      <Box padding="400" borderTopWidth="1px" borderColor="border">
+                      <>
+                        <Divider />
+                        <Box padding="400">
                         <InlineStack align="center">
                           <Pagination
                             hasPrevious={pagination.page > 1}
@@ -435,6 +437,7 @@ export default function Index() {
                           />
                         </InlineStack>
                       </Box>
+                      </>
                     )}
                   </>
                 )}

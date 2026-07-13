@@ -117,7 +117,7 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL!,
   authPathPrefix: "/auth",
-  sessionStorage: baseSessionStorage,
+  sessionStorage: baseSessionStorage as any,
   // Private custom app — SingleMerchant, not AppStore
   distribution: AppDistribution.SingleMerchant,
   webhooks: {
