@@ -188,7 +188,6 @@ export default function Index() {
           key={id}
           position={index}
           onClick={() => navigate(`/app/requests/${id}`)}
-          style={{ cursor: "pointer" }}
         >
           <IndexTable.Cell>
             <Link
@@ -304,7 +303,7 @@ export default function Index() {
             <InlineStack align="space-between" blockAlign="center">
               <Text variant="headingMd" as="h2">Filter Return Activity</Text>
               <Button
-                plain
+                variant="plain"
                 onClick={() => {
                   setQueryInput("");
                   setStatusInput("ALL");
@@ -424,7 +423,7 @@ export default function Index() {
                       {rowMarkup}
                     </IndexTable>
                     {pagination.totalPages > 1 && (
-                      <Box padding="400" borderTopWidth="1px" borderColor="border-subdued">
+                      <Box padding="400" borderTopWidth="1px" borderColor="border">
                         <InlineStack align="center">
                           <Pagination
                             hasPrevious={pagination.page > 1}

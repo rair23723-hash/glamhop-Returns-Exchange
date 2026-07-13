@@ -708,7 +708,7 @@ export default function RequestDetailsPage() {
                   <Text as="h3" variant="headingSm">
                     Customer Notes / Description
                   </Text>
-                  <Text as="p" tone={returnRequest.customerNotes ? "default" : "subdued"}>
+                  <Text as="p" tone={returnRequest.customerNotes ? undefined : "subdued"}>
                     {returnRequest.customerNotes || "No customer notes submitted."}
                   </Text>
                 </BlockStack>
@@ -879,7 +879,7 @@ export default function RequestDetailsPage() {
                         {editingNoteId !== note.id && (
                           <InlineStack gap="300" align="end">
                             <Button
-                              plain
+                              variant="plain"
                               onClick={() => {
                                 setEditingNoteId(note.id);
                                 setEditingNoteText(note.note);
@@ -890,7 +890,7 @@ export default function RequestDetailsPage() {
                             <Form method="post">
                               <input type="hidden" name="actionType" value="delete_note" />
                               <input type="hidden" name="noteId" value={note.id} />
-                              <Button submit plain tone="critical">
+                              <Button submit variant="plain" tone="critical">
                                 Delete Note
                               </Button>
                             </Form>
@@ -1141,7 +1141,7 @@ export default function RequestDetailsPage() {
           },
           disabled: !rejectionInput.trim(),
           loading: isSubmitting,
-          tone: "critical",
+          destructive: true,
         }}
         secondaryActions={[
           {
