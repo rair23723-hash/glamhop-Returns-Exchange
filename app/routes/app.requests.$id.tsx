@@ -13,6 +13,8 @@ import {
   Divider,
   InlineStack,
   Box,
+  Modal,
+  Grid,
 } from "@shopify/polaris";
 import { useState } from "react";
 import shopify from "../shopify.server";
@@ -120,6 +122,7 @@ async function createExchangeDraftOrder(
   }
 }
 
+// Loader: Fetches the request details, logs viewed event, and fetches Shopify order metadata
 export const loader = async ({ params, request }: LoaderFunctionArgs) => {
   const { session, admin } = await shopify.authenticate.admin(request);
   const shop = session.shop;
@@ -146,31 +149,80 @@ export const loader = async ({ params, request }: LoaderFunctionArgs) => {
     throw new Response("Not Found", { status: 404 });
   }
 
-  let phone = "N/A";
+  // 1. Log "Admin Viewed Request" if not logged already (First-time view check)
+  const viewedEvent = await db.timelineEvent.findFirst({
+    where: { returnRequestId: id, status: "ADMIN_VIEWED" }
+  });
+  if (!viewedEvent) {
+    await db.timelineEvent.create({
+      data: {
+        returnRequestId: id!,
+        status: "ADMIN_VIEWED",
+        title: "Admin Viewed Request",
+        description: "Admin viewed the request details for the first time.",
+      }
+    });
+    // Refresh timeline list
+    returnRequest.timeline = await db.timelineEvent.findMany({
+      where: { returnRequestId: id },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  // 2. Fetch full order metadata from Shopify GraphQL
+  let shopifyOrderDetails = null;
   try {
     const orderResponse = await admin.graphql(
       `#graphql
-      query getOrderPhone($id: ID!) {
+      query getOrderDetails($id: ID!) {
         order(id: $id) {
+          createdAt
+          displayFinancialStatus
+          displayFulfillmentStatus
+          totalPriceSet {
+            shopMoney {
+              amount
+              currencyCode
+            }
+          }
+          paymentGatewayNames
           phone
-          customer {
+          shippingAddress {
+            name
+            address1
+            address2
+            city
+            province
+            zip
+            country
             phone
+          }
+          customer {
+            firstName
+            lastName
+            email
+            phone
+          }
+          fulfillments(first: 5) {
+            trackingInfo {
+              number
+              company
+            }
           }
         }
       }`,
       { variables: { id: returnRequest.orderId } }
     );
     const orderData = await orderResponse.json();
-    phone = orderData.data?.order?.phone || orderData.data?.order?.customer?.phone || "N/A";
+    shopifyOrderDetails = orderData.data?.order || null;
   } catch (err: any) {
-    console.error("Failed to fetch phone number from Shopify:", err.message);
+    console.error("Failed to fetch order details from Shopify:", err.message);
   }
 
-  return json({ returnRequest, phone });
+  return json({ returnRequest, shopifyOrderDetails });
 };
 
-
-// Action: Processes request workflows and notifications
+// Action: Processes request workflows, internal note edits, deletions and notifications
 export const action = async ({ request, params }: ActionFunctionArgs) => {
   const { session, admin } = await shopify.authenticate.admin(request);
   const shop = session.shop;
@@ -179,7 +231,6 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const actionType = formData.get("actionType") as string;
 
-  // Retrieve current request details
   const returnRequest = await db.returnRequest.findUnique({
     where: { id, shop },
     include: { items: true },
@@ -194,11 +245,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const orderNumber = returnRequest.orderNumber;
 
   if (actionType === "approve") {
+    // Security check: duplicate approve prevention
+    if (returnRequest.status === "APPROVED" || returnRequest.status === "COMPLETED") {
+      return json({ error: "Request is already approved or closed." }, { status: 400 });
+    }
+
     let draftOrderName = "";
-    
-    // If request type is EXCHANGE, create a draft order in Shopify
     if (returnRequest.type === "EXCHANGE") {
-      const exchangeItem = returnRequest.items[0]; // private app assumes single item per request
+      const exchangeItem = returnRequest.items[0];
       if (exchangeItem && exchangeItem.exchangeVariantId) {
         const draftOrder = await createExchangeDraftOrder(
           admin,
@@ -216,7 +270,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
     const approveDesc = draftOrderName
       ? `Request approved. Size exchange draft order ${draftOrderName} created for customer.`
-      : "Your request has been approved. Preparing return details.";
+      : "Request approved by Admin. Preparing return package details.";
 
     await db.$transaction([
       db.returnRequest.update({
@@ -228,10 +282,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "APPROVED",
           title: "Request Approved",
-          description: approveDesc,
+          description: `By Admin. ${approveDesc}`,
         },
       }),
-      // Notification timeline mock logs
       db.timelineEvent.create({
         data: {
           returnRequestId: id!,
@@ -257,8 +310,13 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       },
     });
   } else if (actionType === "reject") {
+    // Security check: duplicate reject prevention
+    if (returnRequest.status === "REJECTED" || returnRequest.status === "COMPLETED") {
+      return json({ error: "Request is already rejected or closed." }, { status: 400 });
+    }
+
     const rejectionReason = formData.get("rejectionReason") as string;
-    if (!rejectionReason) {
+    if (!rejectionReason || !rejectionReason.trim()) {
       return json({ error: "Rejection reason is required" }, { status: 400 });
     }
 
@@ -275,7 +333,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "REJECTED",
           title: "Request Rejected",
-          description: `Reason: ${rejectionReason}`,
+          description: `By Admin. Reason: ${rejectionReason}`,
         },
       }),
       db.timelineEvent.create({
@@ -283,7 +341,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "NOTIFICATION_SENT",
           title: "Customer Notified (SMS/Email)",
-          description: `Rejection details sent to customer. Reason stated: ${rejectionReason}`,
+          description: `Rejection details sent to customer. Reason: ${rejectionReason}`,
         },
       }),
     ]);
@@ -313,15 +371,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "MORE_INFO_REQUESTED",
           title: "More Info Requested",
-          description: "Admin requested more details regarding your return request.",
-        },
-      }),
-      db.timelineEvent.create({
-        data: {
-          returnRequestId: id!,
-          status: "NOTIFICATION_SENT",
-          title: "Customer Notified",
-          description: `A request for additional info has been sent.`,
+          description: "Admin requested more details regarding the returns package.",
         },
       }),
     ]);
@@ -335,13 +385,22 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           author: "Admin",
         },
       });
-
-      await updateShopifyOrder(
-        admin,
-        orderId,
-        "GlamHop-Note-Added",
-        `[GlamHop Admin Note] ${noteContent}`
-      );
+    }
+  } else if (actionType === "edit_note") {
+    const noteId = formData.get("noteId") as string;
+    const noteContent = formData.get("noteContent") as string;
+    if (noteId && noteContent) {
+      await db.adminNote.update({
+        where: { id: noteId },
+        data: { note: noteContent },
+      });
+    }
+  } else if (actionType === "delete_note") {
+    const noteId = formData.get("noteId") as string;
+    if (noteId) {
+      await db.adminNote.delete({
+        where: { id: noteId },
+      });
     }
   } else if (actionType === "schedule_pickup") {
     await db.$transaction([
@@ -354,25 +413,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "PICKUP_SCHEDULED",
           title: "Pickup Scheduled",
-          description: "Reverse courier pickup scheduled to collect the returns package.",
-        },
-      }),
-      db.timelineEvent.create({
-        data: {
-          returnRequestId: id!,
-          status: "NOTIFICATION_SENT",
-          title: "Customer Notified (SMS)",
-          description: `Pickup details, tracking link and label sent to customer mobile.`,
+          description: "Courier pickup scheduled for reverse logistics collection.",
         },
       }),
     ]);
-
-    await updateShopifyOrder(
-      admin,
-      orderId,
-      "GlamHop-Pickup-Scheduled",
-      `[GlamHop] Reverse courier pickup scheduled for request ${requestId}.`
-    );
   } else if (actionType === "picked_up") {
     await db.$transaction([
       db.returnRequest.update({
@@ -384,7 +428,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "PICKED_UP",
           title: "Picked Up",
-          description: "The package has been successfully collected by the courier.",
+          description: "Package successfully handed over to the delivery partner.",
         },
       }),
     ]);
@@ -399,7 +443,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "RECEIVED_AT_WAREHOUSE",
           title: "Received at Warehouse",
-          description: "Package received at our warehouse. Awaiting quality control check.",
+          description: "Returned items received at inventory warehouse, quality control pending.",
         },
       }),
     ]);
@@ -414,7 +458,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "QUALITY_INSPECTION",
           title: "Quality Inspection",
-          description: "Items are undergoing our standard quality control check.",
+          description: "Items undergoing return quality control checks.",
         },
       }),
     ]);
@@ -427,17 +471,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       db.timelineEvent.create({
         data: {
           returnRequestId: id!,
-          status: "REFUND_PROCESSED",
+          status: "COMPLETED",
           title: "Refund Processed",
-          description: "Quality check passed. Refund has been processed to payment gateway.",
-        },
-      }),
-      db.timelineEvent.create({
-        data: {
-          returnRequestId: id!,
-          status: "NOTIFICATION_SENT",
-          title: "Customer Notified (Email)",
-          description: `Refund notice successfully sent to ${returnRequest.customerEmail}.`,
+          description: "Refund completed and funds disbursed.",
         },
       }),
     ]);
@@ -467,15 +503,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           returnRequestId: id!,
           status: "REPLACEMENT_DISPATCHED",
           title: "Replacement Dispatched",
-          description: "Your replacement item has been packed and handed to courier.",
-        },
-      }),
-      db.timelineEvent.create({
-        data: {
-          returnRequestId: id!,
-          status: "NOTIFICATION_SENT",
-          title: "Customer Notified",
-          description: `Replacement shipping details and tracking sent.`,
+          description: "Exchange replacement order shipped out to customer.",
         },
       }),
     ]);
@@ -503,9 +531,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       db.timelineEvent.create({
         data: {
           returnRequestId: id!,
-          status: "REPLACEMENT_DELIVERED",
+          status: "COMPLETED",
           title: "Replacement Delivered",
-          description: "Your exchanged product has been successfully delivered. Request closed.",
+          description: "Exchange order delivered. Return request closed successfully.",
         },
       }),
     ]);
@@ -515,29 +543,93 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function RequestDetailsPage() {
-  const { returnRequest, phone } = useLoaderData<typeof loader>();
+  const { returnRequest, shopifyOrderDetails } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
   const [rejectionInput, setRejectionInput] = useState("");
-  const [showRejectForm, setShowRejectForm] = useState(false);
+  const [showApproveConfirm, setShowApproveConfirm] = useState(false);
+  const [showRejectModal, setShowRejectModal] = useState(false);
+
   const [newNote, setNewNote] = useState("");
-  const [activePreviewImage, setActivePreviewImage] = useState<string | null>(null);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteText, setEditingNoteText] = useState("");
+
+  const [activeImageIndex, setActiveImageIndex] = useState<number | null>(null);
 
   const items = returnRequest.items || [];
   const notes = returnRequest.notes || [];
   const timeline = returnRequest.timeline || [];
 
+  // Parse Uploaded Images list
+  const allUploadedImages = items.reduce((acc: any[], item: any) => {
+    if (item.images && item.images.length > 0) {
+      item.images.forEach((img: any) => {
+        acc.push({ url: img.url, id: img.id });
+      });
+    }
+    return acc;
+  }, []);
+
+  const getStatusBadgeTone = (status: string) => {
+    switch (status) {
+      case "PENDING":
+        return "attention"; // Yellow
+      case "APPROVED":
+        return "success"; // Green
+      case "REJECTED":
+        return "critical"; // Red
+      case "COMPLETED":
+        return "info"; // Blue
+      default:
+        return "info";
+    }
+  };
+
+  // Safe download trigger for base64 / standard URLs
+  const downloadAttachment = (url: string, index: number) => {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `attachment_${returnRequest.requestId}_${index + 1}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Compile Customer properties (Requirement 6)
+  const shippingAddress = shopifyOrderDetails?.shippingAddress;
+  const addressText = shippingAddress
+    ? `${shippingAddress.name}, ${shippingAddress.address1}${shippingAddress.address2 ? `, ${shippingAddress.address2}` : ""}, ${shippingAddress.city}, ${shippingAddress.province} - ${shippingAddress.zip}, ${shippingAddress.country}`
+    : "N/A";
+
+  const orderValue = shopifyOrderDetails?.totalPriceSet?.shopMoney
+    ? `${shopifyOrderDetails.totalPriceSet.shopMoney.amount} ${shopifyOrderDetails.totalPriceSet.shopMoney.currencyCode}`
+    : "N/A";
+
+  const paymentMethod = shopifyOrderDetails?.paymentGatewayNames?.join(", ") || "N/A";
+  const orderDate = shopifyOrderDetails?.createdAt
+    ? new Date(shopifyOrderDetails.createdAt).toLocaleDateString()
+    : "N/A";
+
+  const courierName = shopifyOrderDetails?.fulfillments?.[0]?.trackingInfo?.[0]?.company || "N/A";
+  const trackingNumber = shopifyOrderDetails?.fulfillments?.[0]?.trackingInfo?.[0]?.number || "N/A";
+
+  const orderStatus = shopifyOrderDetails
+    ? `Financial: ${shopifyOrderDetails.displayFinancialStatus || "N/A"} • Fulfillment: ${shopifyOrderDetails.displayFulfillmentStatus || "N/A"}`
+    : "N/A";
+
+  const phoneDisplay = shopifyOrderDetails?.phone || shopifyOrderDetails?.customer?.phone || "N/A";
+
   return (
     <Page
-      backAction={{ content: "Requests", url: "/app/requests" }}
+      backAction={{ content: "Dashboard", url: "/app" }}
       title={`Request Details: ${returnRequest.requestId}`}
-      subtitle={`Submitted ${new Date(returnRequest.createdAt).toLocaleDateString()}`}
+      subtitle={`Submitted ${new Date(returnRequest.createdAt).toLocaleString()}`}
     >
       <Layout>
-        {/* Main section details */}
+        {/* Main Details Panel */}
         <Layout.Section>
-          <BlockStack gap="400">
+          <BlockStack gap="500">
             {/* Products Card */}
             <Card>
               <BlockStack gap="400">
@@ -546,9 +638,29 @@ export default function RequestDetailsPage() {
                 </Text>
                 {items.map((item) => (
                   <div key={item.id}>
-                    <div style={{ display: "flex", gap: "20px", alignItems: "flex-start" }}>
+                    <div style={{ display: "flex", gap: "24px", alignItems: "flex-start" }}>
                       {item.imageUrl && (
-                        <div style={{ width: "80px", height: "110px", borderRadius: "6px", overflow: "hidden", flexShrink: 0 }}>
+                        <div
+                          style={{
+                            width: "120px",
+                            height: "120px",
+                            borderRadius: "8px",
+                            overflow: "hidden",
+                            border: "1px solid #e1e3e5",
+                            flexShrink: 0,
+                            cursor: "zoom-in",
+                          }}
+                          onClick={() => {
+                            // Find matching index in attachments list if clicked, or preview item image
+                            const imgIdx = allUploadedImages.findIndex(i => i.url === item.imageUrl);
+                            if (imgIdx !== -1) {
+                              setActiveImageIndex(imgIdx);
+                            } else {
+                              // If not in uploads, inject temporary preview
+                              setActiveImageIndex(-1);
+                            }
+                          }}
+                        >
                           <img
                             src={item.imageUrl}
                             alt={item.productTitle}
@@ -557,70 +669,35 @@ export default function RequestDetailsPage() {
                         </div>
                       )}
                       <div style={{ flexGrow: 1 }}>
-                        <Text as="h3" variant="headingSm">
-                          {item.productTitle}
-                        </Text>
-                        <Box paddingBlockStart="100">
-                          <BlockStack gap="100">
-                            {item.variantTitle && (
-                              <Text as="p" tone="subdued">
-                                <strong>Variant:</strong> {item.variantTitle}
-                              </Text>
-                            )}
+                        <BlockStack gap="150">
+                          <Text as="h3" variant="headingMd">
+                            {item.productTitle}
+                          </Text>
+                          {item.variantTitle && (
                             <Text as="p" tone="subdued">
-                              <strong>Quantity:</strong> {item.quantity}
+                              <strong>Variant / Size:</strong> {item.variantTitle}
                             </Text>
-                            <Text as="p" tone="subdued">
-                              <strong>Action Type:</strong>{" "}
-                              <Badge tone={item.type === "RETURN" ? "info" : "success"}>{item.type}</Badge>
+                          )}
+                          <Text as="p" tone="subdued">
+                            <strong>Quantity:</strong> {item.quantity}
+                          </Text>
+                          <Text as="p" tone="subdued">
+                            <strong>Requested Action:</strong>{" "}
+                            <Badge tone={item.type === "RETURN" ? "info" : "success"}>{item.type}</Badge>
+                          </Text>
+                          <Text as="p">
+                            <strong>Return Reason:</strong> {item.reason}
+                            {item.otherReasonText && ` (${item.otherReasonText})`}
+                          </Text>
+                          {item.requestedSize && (
+                            <Text as="p" fontWeight="bold" tone="success">
+                              <strong>Requested Exchange Size:</strong>{" "}
+                              <Badge tone="success">{item.requestedSize}</Badge>
                             </Text>
-                            <Text as="p">
-                              <strong>Reason:</strong> {item.reason}
-                              {item.otherReasonText && ` (${item.otherReasonText})`}
-                            </Text>
-                            {item.requestedSize && (
-                              <Text as="p" fontWeight="bold">
-                                <strong>Requested Exchange Size/Variant:</strong>{" "}
-                                <Badge tone="info">{item.requestedSize}</Badge>
-                              </Text>
-                            )}
-                          </BlockStack>
-                        </Box>
+                          )}
+                        </BlockStack>
                       </div>
                     </div>
-
-                    {/* Image uploads */}
-                    {item.images && item.images.length > 0 && (
-                      <Box paddingBlockStart="400">
-                        <BlockStack gap="200">
-                          <Text as="h4" variant="headingXs">
-                            Customer Uploaded Images
-                          </Text>
-                          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                            {item.images.map((img) => (
-                              <div
-                                key={img.id}
-                                style={{
-                                  width: "120px",
-                                  height: "120px",
-                                  borderRadius: "6px",
-                                  overflow: "hidden",
-                                  border: "1px solid #eeeeee",
-                                  cursor: "pointer",
-                                }}
-                                onClick={() => setActivePreviewImage(img.url)}
-                              >
-                                <img
-                                  src={img.url}
-                                  alt="attachment"
-                                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </BlockStack>
-                      </Box>
-                    )}
                     <Box paddingBlockStart="400">
                       <Divider />
                     </Box>
@@ -638,42 +715,90 @@ export default function RequestDetailsPage() {
               </BlockStack>
             </Card>
 
-            {/* Event Timeline History Card */}
+            {/* Media Uploads Grid */}
             <Card>
               <BlockStack gap="400">
                 <Text as="h2" variant="headingMd">
-                  Timeline Events & Notifications Log
+                  Customer Uploaded Images
                 </Text>
-                <div style={{ display: "flex", flexDirection: "column", gap: "16px", padding: "10px 0" }}>
-                  {timeline.map((event) => (
-                    <div key={event.id} style={{ display: "flex", gap: "16px" }}>
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }}>
-                        <div
-                          style={{
-                            width: "8px",
-                            height: "8px",
-                            borderRadius: "50%",
-                            backgroundColor: event.status === "NOTIFICATION_SENT" ? "#2e7d32" : "#000000",
-                            marginTop: "4px",
-                          }}
+                {allUploadedImages.length === 0 ? (
+                  <Text as="p" tone="subdued">No attachments uploaded for this request.</Text>
+                ) : (
+                  <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
+                    {allUploadedImages.map((img, idx) => (
+                      <div
+                        key={img.id}
+                        style={{
+                          width: "120px",
+                          height: "120px",
+                          borderRadius: "8px",
+                          overflow: "hidden",
+                          border: "1px solid #e1e3e5",
+                          cursor: "pointer",
+                          position: "relative",
+                          boxShadow: "0 2px 8px rgba(0,0,0,0.04)"
+                        }}
+                        onClick={() => setActiveImageIndex(idx)}
+                      >
+                        <img
+                          src={img.url}
+                          alt={`Attachment ${idx + 1}`}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
                         />
                       </div>
-                      <div>
-                        <Text as="span" fontWeight="bold">
-                          {event.title}
-                        </Text>
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          {new Date(event.createdAt).toLocaleString()}
-                        </Text>
-                        {event.description && <Text as="p" tone="subdued">{event.description}</Text>}
+                    ))}
+                  </div>
+                )}
+              </BlockStack>
+            </Card>
+
+            {/* Timeline */}
+            <Card>
+              <BlockStack gap="400">
+                <Text as="h2" variant="headingMd">
+                  Timeline Events & Logistics History
+                </Text>
+                <div style={{ display: "flex", flexDirection: "column", gap: "20px", padding: "10px 0" }}>
+                  {timeline.map((event) => {
+                    const isSystemOrNotification = event.status === "NOTIFICATION_SENT" || event.status === "ADMIN_VIEWED";
+                    return (
+                      <div key={event.id} style={{ display: "flex", gap: "16px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }}>
+                          <div
+                            style={{
+                              width: "10px",
+                              height: "10px",
+                              borderRadius: "50%",
+                              backgroundColor: isSystemOrNotification ? "#5c5f62" : "#108043",
+                              marginTop: "5px",
+                            }}
+                          />
+                        </div>
+                        <div style={{ flexGrow: 1 }}>
+                          <InlineStack align="space-between">
+                            <Text as="span" fontWeight="bold">
+                              {event.title}
+                            </Text>
+                            <Text as="span" variant="bodySm" tone="subdued">
+                              {new Date(event.createdAt).toLocaleDateString()} at {new Date(event.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </Text>
+                          </InlineStack>
+                          {event.description && (
+                            <Box paddingBlockStart="100">
+                              <Text as="p" tone="subdued" variant="bodyMd">
+                                {event.description}
+                              </Text>
+                            </Box>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </BlockStack>
             </Card>
 
-            {/* Internal Notes card */}
+            {/* Internal Notes */}
             <Card>
               <BlockStack gap="400">
                 <Text as="h2" variant="headingMd">
@@ -690,11 +815,13 @@ export default function RequestDetailsPage() {
                       value={newNote}
                       onChange={setNewNote}
                       autoComplete="off"
-                      placeholder="Type internal remarks..."
+                      placeholder="Type internal notes regarding quality inspection, shipping flags..."
                     />
-                    <Button submit loading={isSubmitting}>
-                      Add Note
-                    </Button>
+                    <InlineStack align="end">
+                      <Button submit loading={isSubmitting} disabled={!newNote.trim()}>
+                        Add Note
+                      </Button>
+                    </InlineStack>
                   </BlockStack>
                 </Form>
 
@@ -702,32 +829,73 @@ export default function RequestDetailsPage() {
 
                 {notes.length === 0 ? (
                   <Text as="p" tone="subdued">
-                    No internal notes yet.
+                    No internal notes logged yet.
                   </Text>
                 ) : (
-                  <BlockStack gap="300">
+                  <BlockStack gap="400">
                     {notes.map((note) => (
                       <div
                         key={note.id}
                         style={{
-                          backgroundColor: "#f9f9f9",
-                          padding: "12px",
-                          borderRadius: "6px",
+                          backgroundColor: "#f6f6f7",
+                          padding: "16px",
+                          borderRadius: "8px",
+                          border: "1px solid #edeeef"
                         }}
                       >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            fontSize: "12px",
-                            color: "#707070",
-                            marginBottom: "6px",
-                          }}
-                        >
-                          <strong>{note.author}</strong>
-                          <span>{new Date(note.createdAt).toLocaleString()}</span>
-                        </div>
-                        <Text as="p">{note.note}</Text>
+                        <InlineStack align="space-between" blockAlign="center">
+                          <Text as="span" fontWeight="bold" tone="subdued">
+                            {note.author}
+                          </Text>
+                          <Text as="span" variant="bodySm" tone="subdued">
+                            {new Date(note.createdAt).toLocaleString()}
+                          </Text>
+                        </InlineStack>
+                        <Box paddingBlockStart="200" paddingBlockEnd="200">
+                          {editingNoteId === note.id ? (
+                            <BlockStack gap="200">
+                              <TextField
+                                label="Edit note"
+                                labelHidden
+                                value={editingNoteText}
+                                onChange={setEditingNoteText}
+                                multiline={3}
+                                autoComplete="off"
+                              />
+                              <InlineStack gap="200" align="end">
+                                <Form method="post" onSubmit={() => setEditingNoteId(null)}>
+                                  <input type="hidden" name="actionType" value="edit_note" />
+                                  <input type="hidden" name="noteId" value={note.id} />
+                                  <input type="hidden" name="noteContent" value={editingNoteText} />
+                                  <Button submit size="slim">Save</Button>
+                                </Form>
+                                <Button onClick={() => setEditingNoteId(null)} size="slim">Cancel</Button>
+                              </InlineStack>
+                            </BlockStack>
+                          ) : (
+                            <Text as="p">{note.note}</Text>
+                          )}
+                        </Box>
+                        {editingNoteId !== note.id && (
+                          <InlineStack gap="300" align="end">
+                            <Button
+                              plain
+                              onClick={() => {
+                                setEditingNoteId(note.id);
+                                setEditingNoteText(note.note);
+                              }}
+                            >
+                              Edit Note
+                            </Button>
+                            <Form method="post">
+                              <input type="hidden" name="actionType" value="delete_note" />
+                              <input type="hidden" name="noteId" value={note.id} />
+                              <Button submit plain tone="critical">
+                                Delete Note
+                              </Button>
+                            </Form>
+                          </InlineStack>
+                        )}
                       </div>
                     ))}
                   </BlockStack>
@@ -737,10 +905,10 @@ export default function RequestDetailsPage() {
           </BlockStack>
         </Layout.Section>
 
-        {/* Sidebar Actions / Metadata */}
+        {/* Sidebar Actions & Meta */}
         <Layout.Section variant="oneThird">
-          <BlockStack gap="400">
-            {/* Status card */}
+          <BlockStack gap="500">
+            {/* Progression actions */}
             <Card>
               <BlockStack gap="300">
                 <Text as="h2" variant="headingMd">
@@ -748,17 +916,7 @@ export default function RequestDetailsPage() {
                 </Text>
                 <InlineStack align="space-between">
                   <Text as="span">Status:</Text>
-                  <Badge
-                    tone={
-                      returnRequest.status === "PENDING"
-                        ? "attention"
-                        : returnRequest.status === "COMPLETED"
-                          ? "success"
-                          : returnRequest.status === "REJECTED"
-                            ? "critical"
-                            : "info"
-                    }
-                  >
+                  <Badge tone={getStatusBadgeTone(returnRequest.status)}>
                     {returnRequest.status}
                   </Badge>
                 </InlineStack>
@@ -766,7 +924,7 @@ export default function RequestDetailsPage() {
                 {returnRequest.rejectionReason && (
                   <div
                     style={{
-                      padding: "10px",
+                      padding: "12px",
                       backgroundColor: "#fff5f5",
                       border: "1px solid #ffe3e3",
                       borderRadius: "6px",
@@ -780,136 +938,115 @@ export default function RequestDetailsPage() {
 
                 <Divider />
 
-                {/* Progress flow buttons */}
-                {!showRejectForm && (
-                  <BlockStack gap="200">
-                    {returnRequest.status === "PENDING" && (
-                      <>
+                {/* Progress actions logic (Security double-submit lock checks isSubmitting) */}
+                <BlockStack gap="200">
+                  {returnRequest.status === "PENDING" && (
+                    <>
+                      <Button
+                        variant="primary"
+                        fullWidth
+                        loading={isSubmitting}
+                        onClick={() => setShowApproveConfirm(true)}
+                      >
+                        Approve Request
+                      </Button>
+                      <Button
+                        tone="critical"
+                        fullWidth
+                        onClick={() => setShowRejectModal(true)}
+                      >
+                        Reject Request
+                      </Button>
+                      <Form method="post">
+                        <input type="hidden" name="actionType" value="request_info" />
+                        <Button submit fullWidth disabled={isSubmitting}>
+                          Request More Info
+                        </Button>
+                      </Form>
+                    </>
+                  )}
+
+                  {returnRequest.status === "APPROVED" && (
+                    <Form method="post">
+                      <input type="hidden" name="actionType" value="schedule_pickup" />
+                      <Button submit variant="primary" fullWidth loading={isSubmitting}>
+                        Create Reverse Pickup
+                      </Button>
+                    </Form>
+                  )}
+
+                  {returnRequest.status === "PICKUP_SCHEDULED" && (
+                    <Form method="post">
+                      <input type="hidden" name="actionType" value="picked_up" />
+                      <Button submit variant="primary" fullWidth loading={isSubmitting}>
+                        Mark as Picked Up
+                      </Button>
+                    </Form>
+                  )}
+
+                  {returnRequest.status === "PICKED_UP" && (
+                    <Form method="post">
+                      <input type="hidden" name="actionType" value="received_warehouse" />
+                      <Button submit variant="primary" fullWidth loading={isSubmitting}>
+                        Mark Received at Warehouse
+                      </Button>
+                    </Form>
+                  )}
+
+                  {returnRequest.status === "RECEIVED_AT_WAREHOUSE" && (
+                    <Form method="post">
+                      <input type="hidden" name="actionType" value="quality_inspection" />
+                      <Button submit variant="primary" fullWidth loading={isSubmitting}>
+                        Advance to Inspection
+                      </Button>
+                    </Form>
+                  )}
+
+                  {returnRequest.status === "QUALITY_INSPECTION" && (
+                    <>
+                      {returnRequest.type === "RETURN" ? (
                         <Form method="post">
-                          <input type="hidden" name="actionType" value="approve" />
-                          <Button submit variant="primary" fullWidth>
-                            Approve Request
+                          <input type="hidden" name="actionType" value="refund_processed" />
+                          <Button submit variant="primary" fullWidth loading={isSubmitting}>
+                            Process & Issue Refund
                           </Button>
                         </Form>
-                        <Button tone="critical" fullWidth onClick={() => setShowRejectForm(true)}>
-                          Reject Request
-                        </Button>
+                      ) : (
                         <Form method="post">
-                          <input type="hidden" name="actionType" value="request_info" />
-                          <Button submit fullWidth>
-                            Request More Info
+                          <input type="hidden" name="actionType" value="replacement_dispatched" />
+                          <Button submit variant="primary" fullWidth loading={isSubmitting}>
+                            Dispatch Replacement
                           </Button>
                         </Form>
-                      </>
-                    )}
+                      )}
+                    </>
+                  )}
 
-                    {returnRequest.status === "APPROVED" && (
-                      <Form method="post">
-                        <input type="hidden" name="actionType" value="schedule_pickup" />
-                        <Button submit variant="primary" fullWidth>
-                          Create Reverse Pickup
-                        </Button>
-                      </Form>
-                    )}
+                  {returnRequest.status === "REPLACEMENT_DISPATCHED" && (
+                    <Form method="post">
+                      <input type="hidden" name="actionType" value="replacement_delivered" />
+                      <Button submit variant="primary" fullWidth loading={isSubmitting}>
+                        Mark Replacement Delivered
+                      </Button>
+                    </Form>
+                  )}
 
-                    {returnRequest.status === "PICKUP_SCHEDULED" && (
-                      <Form method="post">
-                        <input type="hidden" name="actionType" value="picked_up" />
-                        <Button submit variant="primary" fullWidth>
-                          Mark as Picked Up
-                        </Button>
-                      </Form>
-                    )}
-
-                    {returnRequest.status === "PICKED_UP" && (
-                      <Form method="post">
-                        <input type="hidden" name="actionType" value="received_warehouse" />
-                        <Button submit variant="primary" fullWidth>
-                          Mark Received at Warehouse
-                        </Button>
-                      </Form>
-                    )}
-
-                    {returnRequest.status === "RECEIVED_AT_WAREHOUSE" && (
-                      <Form method="post">
-                        <input type="hidden" name="actionType" value="quality_inspection" />
-                        <Button submit variant="primary" fullWidth>
-                          Advance to Inspection
-                        </Button>
-                      </Form>
-                    )}
-
-                    {returnRequest.status === "QUALITY_INSPECTION" && (
-                      <>
-                        {returnRequest.type === "RETURN" ? (
-                          <Form method="post">
-                            <input type="hidden" name="actionType" value="refund_processed" />
-                            <Button submit variant="primary" fullWidth>
-                              Process & Issue Refund
-                            </Button>
-                          </Form>
-                        ) : (
-                          <Form method="post">
-                            <input type="hidden" name="actionType" value="replacement_dispatched" />
-                            <Button submit variant="primary" fullWidth>
-                              Dispatch Replacement
-                            </Button>
-                          </Form>
-                        )}
-                      </>
-                    )}
-
-                    {returnRequest.status === "REPLACEMENT_DISPATCHED" && (
-                      <Form method="post">
-                        <input type="hidden" name="actionType" value="replacement_delivered" />
-                        <Button submit variant="primary" fullWidth>
-                          Mark Replacement Delivered
-                        </Button>
-                      </Form>
-                    )}
-
-                    {returnRequest.status === "COMPLETED" && (
-                      <Text as="p" tone="subdued" alignment="center">
-                        This request has been successfully closed.
-                      </Text>
-                    )}
-                  </BlockStack>
-                )}
-
-                {/* Reject form */}
-                {showRejectForm && (
-                  <Form method="post" onSubmit={() => setShowRejectForm(false)}>
-                    <input type="hidden" name="actionType" value="reject" />
-                    <BlockStack gap="200">
-                      <TextField
-                        label="Rejection Reason"
-                        name="rejectionReason"
-                        value={rejectionInput}
-                        onChange={setRejectionInput}
-                        multiline={3}
-                        placeholder="Explain reason to customer..."
-                        required
-                        autoComplete="off"
-                      />
-                      <InlineStack gap="200">
-                        <Button submit variant="primary" tone="critical" loading={isSubmitting}>
-                          Submit Rejection
-                        </Button>
-                        <Button onClick={() => setShowRejectForm(false)}>Cancel</Button>
-                      </InlineStack>
-                    </BlockStack>
-                  </Form>
-                )}
+                  {returnRequest.status === "COMPLETED" && (
+                    <Text as="p" tone="subdued" alignment="center">
+                      This request has been successfully closed.
+                    </Text>
+                  )}
+                </BlockStack>
               </BlockStack>
             </Card>
 
-            {/* Customer Details */}
+            {/* Customer Details (Requirement 6) */}
             <Card>
               <BlockStack gap="300">
                 <Text as="h2" variant="headingMd">
-                  Customer Details
+                  Customer Information
                 </Text>
-                <BlockStack gap="100">
+                <BlockStack gap="150">
                   <Text as="p">
                     <strong>Name:</strong> {returnRequest.customerName || "N/A"}
                   </Text>
@@ -917,27 +1054,45 @@ export default function RequestDetailsPage() {
                     <strong>Email:</strong> {returnRequest.customerEmail || "N/A"}
                   </Text>
                   <Text as="p">
-                    <strong>Phone:</strong> {phone || "N/A"}
+                    <strong>Phone:</strong> {phoneDisplay}
                   </Text>
-                  <Text as="p" tone="subdued" variant="bodySm">
-                    ID: {returnRequest.customerId}
+                  <Text as="p">
+                    <strong>Shipping Address:</strong> {addressText}
                   </Text>
                 </BlockStack>
               </BlockStack>
             </Card>
 
-            {/* Order details */}
+            {/* Order Details (Requirement 6) */}
             <Card>
               <BlockStack gap="300">
                 <Text as="h2" variant="headingMd">
-                  Order Metadata
+                  Order Details
                 </Text>
-                <BlockStack gap="100">
+                <BlockStack gap="150">
                   <Text as="p">
                     <strong>Order Number:</strong> #{returnRequest.orderNumber}
                   </Text>
+                  <Text as="p">
+                    <strong>Order Date:</strong> {orderDate}
+                  </Text>
+                  <Text as="p">
+                    <strong>Order Value:</strong> {orderValue}
+                  </Text>
+                  <Text as="p">
+                    <strong>Payment Method:</strong> {paymentMethod}
+                  </Text>
+                  <Text as="p">
+                    <strong>Order Status:</strong> {orderStatus}
+                  </Text>
+                  <Text as="p">
+                    <strong>Courier:</strong> {courierName}
+                  </Text>
+                  <Text as="p">
+                    <strong>Tracking Number:</strong> {trackingNumber}
+                  </Text>
                   <Text as="p" tone="subdued" variant="bodySm">
-                    GID: {returnRequest.orderId}
+                    Shopify GID: {returnRequest.orderId}
                   </Text>
                 </BlockStack>
               </BlockStack>
@@ -945,7 +1100,73 @@ export default function RequestDetailsPage() {
           </BlockStack>
         </Layout.Section>
       </Layout>
-      {activePreviewImage && (
+
+      {/* Approve Confirmation Modal (Requirement 3) */}
+      <Modal
+        open={showApproveConfirm}
+        onClose={() => setShowApproveConfirm(false)}
+        title="Approve Request?"
+        primaryAction={{
+          content: "Approve",
+          onAction: () => {
+            document.getElementById("approve-form-submit")?.click();
+            setShowApproveConfirm(false);
+          },
+          loading: isSubmitting,
+        }}
+        secondaryActions={[
+          {
+            content: "Cancel",
+            onAction: () => setShowApproveConfirm(false),
+          },
+        ]}
+      >
+        <Modal.Section>
+          <Text as="p">This action cannot be undone. It will approve this return/exchange request.</Text>
+        </Modal.Section>
+      </Modal>
+
+      {/* Reject Confirmation Modal (Requirement 3) */}
+      <Modal
+        open={showRejectModal}
+        onClose={() => setShowRejectModal(false)}
+        title="Reject Request?"
+        primaryAction={{
+          content: "Submit Rejection",
+          onAction: () => {
+            if (rejectionInput.trim()) {
+              document.getElementById("reject-form-submit")?.click();
+              setShowRejectModal(false);
+            }
+          },
+          disabled: !rejectionInput.trim(),
+          loading: isSubmitting,
+          tone: "critical",
+        }}
+        secondaryActions={[
+          {
+            content: "Cancel",
+            onAction: () => setShowRejectModal(false),
+          },
+        ]}
+      >
+        <Modal.Section>
+          <BlockStack gap="400">
+            <Text as="p">Please provide a reason to the customer for rejecting this request. This action cannot be undone.</Text>
+            <TextField
+              label="Rejection Reason"
+              value={rejectionInput}
+              onChange={setRejectionInput}
+              multiline={3}
+              placeholder="Explain the rejection reason (required)..."
+              autoComplete="off"
+            />
+          </BlockStack>
+        </Modal.Section>
+      </Modal>
+
+      {/* Uploaded Images Slider Modal (Requirement 8) */}
+      {activeImageIndex !== null && (
         <div
           style={{
             position: "fixed",
@@ -953,27 +1174,124 @@ export default function RequestDetailsPage() {
             left: 0,
             width: "100vw",
             height: "100vh",
-            backgroundColor: "rgba(0,0,0,0.85)",
+            backgroundColor: "rgba(0,0,0,0.9)",
             display: "flex",
+            flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
             zIndex: 9999,
-            cursor: "zoom-out",
           }}
-          onClick={() => setActivePreviewImage(null)}
         >
-          <img
-            src={activePreviewImage}
-            alt="Full size attachment preview"
+          {/* Close trigger */}
+          <div
             style={{
-              maxWidth: "90%",
-              maxHeight: "90%",
-              borderRadius: "8px",
-              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+              position: "absolute",
+              top: "20px",
+              right: "20px",
+              color: "#ffffff",
+              fontSize: "28px",
+              cursor: "pointer",
+              fontWeight: "bold",
+              zIndex: 10000,
             }}
-          />
+            onClick={() => setActiveImageIndex(null)}
+          >
+            &times;
+          </div>
+
+          {/* Active Image rendering */}
+          <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", width: "90%", height: "70%" }}>
+            {activeImageIndex === -1 ? (
+              <img
+                src={items[0]?.imageUrl || ""}
+                alt="Product preview"
+                style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "4px" }}
+              />
+            ) : (
+              <>
+                {/* Prev Slide button */}
+                {allUploadedImages.length > 1 && (
+                  <button
+                    style={{
+                      position: "absolute",
+                      left: "10px",
+                      backgroundColor: "rgba(255,255,255,0.2)",
+                      border: "none",
+                      color: "#ffffff",
+                      fontSize: "24px",
+                      padding: "16px 20px",
+                      borderRadius: "50%",
+                      cursor: "pointer"
+                    }}
+                    onClick={() => setActiveImageIndex((activeImageIndex - 1 + allUploadedImages.length) % allUploadedImages.length)}
+                  >
+                    &#10094;
+                  </button>
+                )}
+
+                <img
+                  src={allUploadedImages[activeImageIndex].url}
+                  alt={`Zoom Attachment ${activeImageIndex + 1}`}
+                  style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "4px" }}
+                />
+
+                {/* Next Slide button */}
+                {allUploadedImages.length > 1 && (
+                  <button
+                    style={{
+                      position: "absolute",
+                      right: "10px",
+                      backgroundColor: "rgba(255,255,255,0.2)",
+                      border: "none",
+                      color: "#ffffff",
+                      fontSize: "24px",
+                      padding: "16px 20px",
+                      borderRadius: "50%",
+                      cursor: "pointer"
+                    }}
+                    onClick={() => setActiveImageIndex((activeImageIndex + 1) % allUploadedImages.length)}
+                  >
+                    &#10095;
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Premium control bar (Requirement 8) */}
+          <div style={{ marginTop: "24px", display: "flex", gap: "16px" }}>
+            <Button
+              onClick={() => {
+                const url = activeImageIndex === -1 ? items[0]?.imageUrl : allUploadedImages[activeImageIndex].url;
+                if (url) downloadAttachment(url, activeImageIndex === -1 ? 0 : activeImageIndex);
+              }}
+            >
+              Download Image
+            </Button>
+            <Button
+              onClick={() => {
+                const url = activeImageIndex === -1 ? items[0]?.imageUrl : allUploadedImages[activeImageIndex].url;
+                if (url) window.open(url, "_blank");
+              }}
+            >
+              Open in New Tab
+            </Button>
+            <Button onClick={() => setActiveImageIndex(null)}>Close Preview</Button>
+          </div>
         </div>
       )}
+
+      {/* Hidden forms to execute Safe Approve & Reject submissions */}
+      <Form method="post" style={{ display: "none" }}>
+        <input type="hidden" name="actionType" value="approve" />
+        <button type="submit" id="approve-form-submit" />
+      </Form>
+
+      <Form method="post" style={{ display: "none" }}>
+        <input type="hidden" name="actionType" value="reject" />
+        <input type="hidden" name="rejectionReason" value={rejectionInput} />
+        <button type="submit" id="reject-form-submit" />
+      </Form>
     </Page>
   );
 }

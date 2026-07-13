@@ -13,16 +13,59 @@ import {
   BlockStack,
   InlineStack,
   Box,
+  TextField,
+  Select,
+  Pagination,
+  Button,
 } from "@shopify/polaris";
+import { useState } from "react";
 import shopify from "../shopify.server";
 import db from "../db.server";
 
-// Loader: Authenticates the admin and computes the 8 KPI analytics widgets
+// Loader: Authenticates the admin and computes KPIs + paginated search/filters
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await shopify.authenticate.admin(request);
   const shop = session.shop;
 
-  // 1. Calculate KPI Metrics
+  const url = new URL(request.url);
+  const search = url.searchParams.get("query") || "";
+  const status = url.searchParams.get("status") || "ALL";
+  const type = url.searchParams.get("type") || "ALL";
+  const sortBy = url.searchParams.get("sortBy") || "createdAt";
+  const sortDir = url.searchParams.get("sortDir") || "desc";
+  const page = parseInt(url.searchParams.get("page") || "1", 10);
+  const limit = parseInt(url.searchParams.get("limit") || "10", 10);
+
+  const whereClause: any = { shop };
+
+  if (search) {
+    whereClause.OR = [
+      { requestId: { contains: search, mode: "insensitive" } },
+      { orderNumber: { contains: search, mode: "insensitive" } },
+      { customerName: { contains: search, mode: "insensitive" } },
+      { customerEmail: { contains: search, mode: "insensitive" } },
+    ];
+  }
+
+  if (status !== "ALL") {
+    whereClause.status = status;
+  }
+
+  if (type !== "ALL") {
+    whereClause.type = type;
+  }
+
+  const totalCount = await db.returnRequest.count({ where: whereClause });
+
+  const requests = await db.returnRequest.findMany({
+    where: whereClause,
+    include: { items: true },
+    orderBy: { [sortBy]: sortDir },
+    skip: (page - 1) * limit,
+    take: limit,
+  });
+
+  // Analytics widget totals (general counters)
   const total = await db.returnRequest.count({ where: { shop } });
   const pending = await db.returnRequest.count({ where: { shop, status: "PENDING" } });
   const approved = await db.returnRequest.count({ where: { shop, status: "APPROVED" } });
@@ -34,33 +77,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { shop, type: "EXCHANGE", status: "COMPLETED" },
   });
 
-  // Today's returns (since midnight of current day)
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const todayReturns = await db.returnRequest.count({
-    where: {
-      shop,
-      createdAt: { gte: startOfToday },
-    },
+    where: { shop, createdAt: { gte: startOfToday } },
   });
 
-  // Monthly returns (since start of current calendar month)
   const startOfMonth = new Date();
   startOfMonth.setDate(1);
   startOfMonth.setHours(0, 0, 0, 0);
   const monthlyReturns = await db.returnRequest.count({
-    where: {
-      shop,
-      createdAt: { gte: startOfMonth },
-    },
-  });
-
-  // 2. Retrieve recent requests
-  const recentRequests = await db.returnRequest.findMany({
-    where: { shop },
-    include: { items: true },
-    orderBy: { createdAt: "desc" },
-    take: 10,
+    where: { shop, createdAt: { gte: startOfMonth } },
   });
 
   return json({
@@ -74,20 +101,80 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       todayReturns,
       monthlyReturns,
     },
-    recentRequests,
+    requests,
+    pagination: {
+      page,
+      limit,
+      totalCount,
+      totalPages: Math.ceil(totalCount / limit),
+    },
+    filters: {
+      search,
+      status,
+      type,
+      sortBy,
+      sortDir,
+    }
   });
 };
 
 export default function Index() {
-  const { kpis, recentRequests } = useLoaderData<typeof loader>();
+  const { kpis, requests, pagination, filters } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
+
+  const [queryInput, setQueryInput] = useState(filters.search);
+  const [statusInput, setStatusInput] = useState(filters.status);
+  const [typeInput, setTypeInput] = useState(filters.type);
+  const [sortInput, setSortInput] = useState(`${filters.sortBy}:${filters.sortDir}`);
+
+  const applyFilters = (params: { query?: string; status?: string; type?: string; sort?: string; page?: number }) => {
+    const searchParams = new URLSearchParams(window.location.search);
+    if (params.query !== undefined) {
+      if (params.query) searchParams.set("query", params.query);
+      else searchParams.delete("query");
+    }
+    if (params.status !== undefined) {
+      if (params.status !== "ALL") searchParams.set("status", params.status);
+      else searchParams.delete("status");
+    }
+    if (params.type !== undefined) {
+      if (params.type !== "ALL") searchParams.set("type", params.type);
+      else searchParams.delete("type");
+    }
+    if (params.sort !== undefined) {
+      const [sortBy, sortDir] = params.sort.split(":");
+      searchParams.set("sortBy", sortBy);
+      searchParams.set("sortDir", sortDir);
+    }
+    if (params.page !== undefined) {
+      searchParams.set("page", params.page.toString());
+    } else {
+      searchParams.set("page", "1");
+    }
+    navigate(`?${searchParams.toString()}`);
+  };
 
   const resourceName = {
     singular: "return request",
     plural: "return requests",
   };
 
-  const rowMarkup = recentRequests.map(
+  const getStatusBadgeTone = (status: string) => {
+    switch (status) {
+      case "PENDING":
+        return "attention"; // Yellow
+      case "APPROVED":
+        return "success"; // Green
+      case "REJECTED":
+        return "critical"; // Red
+      case "COMPLETED":
+        return "info"; // Blue
+      default:
+        return "info";
+    }
+  };
+
+  const rowMarkup = requests.map(
     (
       { id, requestId, orderNumber, customerName, customerEmail, status, type, createdAt, items },
       index
@@ -131,17 +218,7 @@ export default function Index() {
             {new Date(createdAt).toLocaleDateString()}
           </IndexTable.Cell>
           <IndexTable.Cell>
-            <Badge
-              tone={
-                status === "PENDING"
-                  ? "attention"
-                  : status === "COMPLETED"
-                    ? "success"
-                    : status === "REJECTED"
-                      ? "critical"
-                      : "info"
-              }
-            >
+            <Badge tone={getStatusBadgeTone(status)}>
               {status}
             </Badge>
           </IndexTable.Cell>
@@ -221,39 +298,144 @@ export default function Index() {
           </Grid.Cell>
         </Grid>
 
+        {/* Filter Section */}
+        <Card padding="400">
+          <BlockStack gap="400">
+            <InlineStack align="space-between" blockAlign="center">
+              <Text variant="headingMd" as="h2">Filter Return Activity</Text>
+              <Button
+                plain
+                onClick={() => {
+                  setQueryInput("");
+                  setStatusInput("ALL");
+                  setTypeInput("ALL");
+                  setSortInput("createdAt:desc");
+                  navigate("?");
+                }}
+              >
+                Clear Filters
+              </Button>
+            </InlineStack>
+
+            <Grid>
+              <Grid.Cell columnSpan={{ xs: 6, sm: 6, md: 3, lg: 3 }}>
+                <TextField
+                  label="Search"
+                  value={queryInput}
+                  onChange={(val) => {
+                    setQueryInput(val);
+                    applyFilters({ query: val });
+                  }}
+                  placeholder="Request ID, Order, Name, Email"
+                  autoComplete="off"
+                  labelHidden
+                />
+              </Grid.Cell>
+              <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
+                <Select
+                  label="Status"
+                  labelHidden
+                  options={[
+                    { label: "All Statuses", value: "ALL" },
+                    { label: "Pending Review", value: "PENDING" },
+                    { label: "Approved", value: "APPROVED" },
+                    { label: "Rejected", value: "REJECTED" },
+                    { label: "Completed", value: "COMPLETED" },
+                  ]}
+                  value={statusInput}
+                  onChange={(val) => {
+                    setStatusInput(val);
+                    applyFilters({ status: val });
+                  }}
+                />
+              </Grid.Cell>
+              <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 3 }}>
+                <Select
+                  label="Type"
+                  labelHidden
+                  options={[
+                    { label: "All Types", value: "ALL" },
+                    { label: "Return", value: "RETURN" },
+                    { label: "Exchange", value: "EXCHANGE" },
+                  ]}
+                  value={typeInput}
+                  onChange={(val) => {
+                    setTypeInput(val);
+                    applyFilters({ type: val });
+                  }}
+                />
+              </Grid.Cell>
+              <Grid.Cell columnSpan={{ xs: 6, sm: 6, md: 3, lg: 3 }}>
+                <Select
+                  label="Sort by"
+                  labelHidden
+                  options={[
+                    { label: "Newest First", value: "createdAt:desc" },
+                    { label: "Oldest First", value: "createdAt:asc" },
+                    { label: "Order Number (High to Low)", value: "orderNumber:desc" },
+                    { label: "Order Number (Low to High)", value: "orderNumber:asc" },
+                  ]}
+                  value={sortInput}
+                  onChange={(val) => {
+                    setSortInput(val);
+                    applyFilters({ sort: val });
+                  }}
+                />
+              </Grid.Cell>
+            </Grid>
+          </BlockStack>
+        </Card>
+
         {/* Requests Table Activity */}
         <Layout>
           <Layout.Section>
-            <Card padding="400">
+            <Card padding="0">
               <BlockStack gap="400">
-                <Text variant="headingMd" as="h2">Recent Return Activity</Text>
-                
-                {recentRequests.length === 0 ? (
-                  <EmptyState
-                    heading="No requests received yet"
-                    image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
-                  >
-                    <p>Submitted return and exchange requests will show up in real-time here.</p>
-                  </EmptyState>
+                <Box padding="400">
+                  <Text variant="headingMd" as="h2">Recent Return Activity</Text>
+                </Box>
+                {requests.length === 0 ? (
+                  <Box padding="400">
+                    <EmptyState
+                      heading="No requests found"
+                      image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                    >
+                      <p>No return or exchange requests match your filter criteria.</p>
+                    </EmptyState>
+                  </Box>
                 ) : (
-                  <IndexTable
-                    resourceName={resourceName}
-                    itemCount={recentRequests.length}
-                    headings={[
-                      { title: "Request ID" },
-                      { title: "Order" },
-                      { title: "Customer" },
-                      { title: "Email" },
-                      { title: "Product" },
-                      { title: "Type" },
-                      { title: "Reason" },
-                      { title: "Date" },
-                      { title: "Status" },
-                    ]}
-                    selectable={false}
-                  >
-                    {rowMarkup}
-                  </IndexTable>
+                  <>
+                    <IndexTable
+                      resourceName={resourceName}
+                      itemCount={requests.length}
+                      headings={[
+                        { title: "Request ID" },
+                        { title: "Order" },
+                        { title: "Customer" },
+                        { title: "Email" },
+                        { title: "Product" },
+                        { title: "Type" },
+                        { title: "Reason" },
+                        { title: "Date" },
+                        { title: "Status" },
+                      ]}
+                      selectable={false}
+                    >
+                      {rowMarkup}
+                    </IndexTable>
+                    {pagination.totalPages > 1 && (
+                      <Box padding="400" borderTopWidth="1px" borderColor="border-subdued">
+                        <InlineStack align="center">
+                          <Pagination
+                            hasPrevious={pagination.page > 1}
+                            onPrevious={() => applyFilters({ page: pagination.page - 1 })}
+                            hasNext={pagination.page < pagination.totalPages}
+                            onNext={() => applyFilters({ page: pagination.page + 1 })}
+                          />
+                        </InlineStack>
+                      </Box>
+                    )}
+                  </>
                 )}
               </BlockStack>
             </Card>
